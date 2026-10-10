@@ -1,7 +1,7 @@
 {
   "name": "md-scrub",
   "version": "0.1.0",
-  "description": "Checks every Markdown file Claude writes and removes content you've ruled out, such as third-party legal terms",
+  "description": "A Claude Code plugin that enforces what Claude writes in Markdown.",
   "author": {
     "name": "macp-sh",
     "url": "https://github.com/macp-sh"
