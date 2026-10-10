@@ -1,0 +1,71 @@
+{
+  "name": "third-party legal terms",
+  "description": "Third-party legal terms means what the terms of service or use, EULAs, licence agreements, privacy, cookie, usage or acceptable use policies, data processing or service level agreements, or other legal text of another company's service, software, fonts, images or data say, allow, require or prohibit, including summaries and paraphrases of them.",
+  "notIncluded": "The project's own licence, licence section, licence badge or copyright line; naming the licence of a dependency, such as zod (MIT) or a licence column in a dependency table; deciding to use or avoid a dependency because of its licence; using or installing a service, pricing, seats, usage limits, licence keys, contracts, reminders to check terms later, and unrelated meanings of licence such as professional or driver's licences.",
+  "message": "The user does not allow third-party legal terms in Markdown files: what other companies' terms of service, EULAs, licence agreements or policies say, allow, require or prohibit. The project's own licence and naming a dependency's licence are fine.",
+  "examples": {
+    "is": [
+      "OpenRouter's terms prohibit reselling API access.",
+      "Google Maps terms require the Google logo on any map view.",
+      "The free tier is for non-commercial use only; production needs the Business licence.",
+      "We may not redistribute the Stripe SDK binaries.",
+      "Anthropic's usage policy forbids using the API to build weapons.",
+      "GPL is copyleft, so linking it would require us to open-source the app.",
+      "Dataset is CC BY 4.0, so we must credit the source wherever it's shown.",
+      "By using the API you agree to indemnify the provider against third-party claims.",
+      "Section 4 of the EULA limits liability to the fees paid in the last 12 months.",
+      "Their privacy policy says uploaded files are kept for 90 days and may be shared with sub-processors."
+    ],
+    "isNot": [
+      "This project is licensed under MIT.",
+      "![licence](https://img.shields.io/badge/license-MIT-blue)",
+      "© 2026 macp-sh. Released under the MIT License.",
+      "zod (MIT), sharp (Apache 2.0) and ffmpeg (LGPL) are the main dependencies.",
+      "| Library | Licence |\n| sharp | Apache-2.0 |\n| zod | MIT |",
+      "We can't use that one, it's GPL.",
+      "Install with `bun add stripe`.",
+      "The API needs an Authorization header.",
+      "Pro plan is $20/month per user.",
+      "We have 5 Figma seats.",
+      "Free tier allows 1,000 requests per day.",
+      "TODO: check licence compatibility before adding this.",
+      "Set LICENSE_KEY in .env before running.",
+      "Our enterprise agreement renews in March.",
+      "We hired a licensed electrician.",
+      "Driver's licence scanning feature.",
+      "The Linux kernel is GPLv2, while most of the userland tools are BSD or MIT."
+    ]
+  },
+  "mostly": {
+    "description": "Most of its text is the terms, policies or legal text of a service, product or organisation: terms of service or use, EULAs, licence texts, privacy, cookie or acceptable use policies, contracts or agreements, legal notices, or a summary of one.",
+    "is": [
+      "A terms of service page: definitions, permitted use, restrictions, termination, liability.",
+      "The full text of a software licence.",
+      "A third-party notices file listing each dependency with its licence and copyright.",
+      "A summary of a provider's acceptable use policy, rule by rule.",
+      "A privacy policy: what data is collected, how long it is kept, who it is shared with, and the user's rights."
+    ],
+    "isNot": [
+      "A README with installation, usage and a one-line licence section at the end.",
+      "A design document that mentions an attribution requirement once.",
+      "A setup guide that names the services it uses."
+    ]
+  },
+  "keywords": [
+    {
+      "label": "terms with an obligation",
+      "pattern": "\\b(terms( of (service|use))?|EULA|end[- ]user licen[cs]e agreement|licen[cs]e agreement|(acceptable use|usage|privacy|cookie) polic(y|ies))\\b[^.\\n]{0,80}\\b(prohibit|forbid|require|restrict|limit|grant|permit|disallow)s?\\b",
+      "flags": "i"
+    },
+    {
+      "label": "non-commercial use",
+      "pattern": "\\bnon-?commercial (use|purposes)\\b",
+      "flags": "i"
+    },
+    {
+      "label": "no redistribution",
+      "pattern": "\\b(may|must|can)( ?not|n't) (redistribute|resell|sublicen[cs]e)\\b",
+      "flags": "i"
+    }
+  ]
+}

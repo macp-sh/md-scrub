@@ -1,0 +1,34 @@
+{
+  "name": "md-scrub",
+  "version": "0.1.0",
+  "description": "Checks every Markdown file Claude writes and removes content you've ruled out, such as third-party legal terms",
+  "author": {
+    "name": "macp-sh",
+    "url": "https://github.com/macp-sh"
+  },
+  "repository": "https://github.com/macp-sh/md-scrub",
+  "license": "MIT",
+  "keywords": [
+    "markdown",
+    "hooks",
+    "status-line"
+  ],
+  "userConfig": {
+    "openrouter_api_key": {
+      "type": "string",
+      "title": "OpenRouter API key",
+      "description": "For the Jev classifier, which checks Markdown against your topics. Get one at openrouter.ai/keys; checks cost a fraction of a cent per file. md-scrub stays off until you add one.",
+      "sensitive": true
+    },
+    "jev_on_error": {
+      "type": "string",
+      "title": "If Jev is unavailable",
+      "description": "If OpenRouter can't be reached. allow: keyword check only, with a notice. block: refuse Markdown writes until it responds.",
+      "options": [
+        "allow",
+        "block"
+      ],
+      "default": "allow"
+    }
+  }
+}

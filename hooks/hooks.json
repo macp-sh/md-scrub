@@ -1,0 +1,104 @@
+{
+  "modules": [
+    "./status.ts"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/check.sh"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": [
+              "--no-env-file",
+              "${CLAUDE_PLUGIN_ROOT}/src/cli.ts",
+              "pre"
+            ],
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": [
+              "--no-env-file",
+              "${CLAUDE_PLUGIN_ROOT}/src/cli.ts",
+              "post"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": [
+              "--no-env-file",
+              "${CLAUDE_PLUGIN_ROOT}/src/cli.ts",
+              "post"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": [
+              "--no-env-file",
+              "${CLAUDE_PLUGIN_ROOT}/src/cli.ts",
+              "turn-start"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": [
+              "--no-env-file",
+              "${CLAUDE_PLUGIN_ROOT}/src/cli.ts",
+              "stop"
+            ],
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

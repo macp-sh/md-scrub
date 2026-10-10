@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "thresholds": {
+    "flag": 0.4,
+    "mostly": 0.5
+  },
+  "topics": {
+    "third-party-terms": {
+      "enabled": true
+    }
+  }
+}

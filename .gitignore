@@ -1,0 +1,15 @@
+# Development notes, handover and decisions: kept locally, not published
+claude/
+
+# Claude Code's per-project settings and local state
+.claude/
+
+# Secrets and runtime state
+.env
+state/
+
+# Dependencies and OS or editor files
+node_modules/
+.DS_Store
+.vscode/
+.idea/
