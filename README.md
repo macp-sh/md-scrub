@@ -2,7 +2,7 @@
 
 [![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-d97757)](https://code.claude.com/docs/en/plugins/install) [![Release](https://img.shields.io/github/v/release/macp-sh/md-scrub)](https://github.com/macp-sh/md-scrub/releases/latest) [![MIT licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
 
-**A Claude Code plugin that enforces what Claude may write in Markdown files.**
+**A Claude Code plugin that enforces what Claude writes in Markdown.**
 
 ![Claude writes a Markdown file, a PreToolUse hook catches it, Jev classifies it against your topics, and if anything is flagged, Haiku 5.5 adjusts the file; the status line shows what changed](.github/assets/how-it-works.svg)
 
