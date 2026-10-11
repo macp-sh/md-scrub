@@ -81,6 +81,8 @@ export function logActions(text: string, limit = 50): LogEntry[] {
     let e: LogEntry
     try { e = JSON.parse(line) } catch { continue }
     if (e.event !== 'action' || !e.file || e.action === 'clean') continue
+    const prev = out[out.length - 1]
+    if (prev && prev.file === e.file && prev.action === e.action && Math.abs(Date.parse(prev.t) - Date.parse(e.t)) < 60_000) continue
     out.push(e)
     if (out.length >= limit) break
   }
@@ -119,6 +121,8 @@ export function isExcluded(file: string, list: string[]): boolean {
 }
 
 export const relative = (file: string, root: string) => (file.startsWith(root + '/') ? file.slice(root.length + 1) : file)
+const folderOf = (f: string) => (f.includes('/') ? f.slice(0, f.lastIndexOf('/') + 1) : '')
+const nameOf = (f: string) => f.slice(f.lastIndexOf('/') + 1)
 const tilde = (path: string, home: string) => (path.startsWith(home + '/') ? '~' + path.slice(home.length) : path)
 const parent = (f: string) => (f.includes('/') ? f.slice(0, f.lastIndexOf('/') + 1) : undefined)
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'vendor', '.venv', 'target'])
@@ -264,7 +268,11 @@ async function copyTopic($: EngineInterface, t: Topic) {
 
 const Glyph = { on: '●', off: '○', unset: '·' }
 // Rows the body keeps even when its list is short, so the description sits at the bottom.
-const BODY_ROWS = 12
+const BODY_ROWS = 8
+// md-scrub's own colours; Claude Code's theme colours are kept for what they already mean (success,
+// error, warning).
+const ORANGE = '#d97757'
+const SELECTED = '#3a3835'
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const glyph = (v: boolean | undefined) => (v === undefined ? Glyph.unset : v ? Glyph.on : Glyph.off)
 
@@ -294,11 +302,13 @@ export function registerPanel(on: On) {
     const { data } = cache
     const hd = data.header // not `h`: that's the JSX factory
     const width = Math.max(40, e.props.bodyColumns)
-    const nameWidth = Math.min(40, width - 22)
+    // The scope columns start just after the longest name.
+    const longest = Math.max(12, ...data.topics.map(t => t.name.length), ...data.exclusions.user.map(x => x.length), ...data.exclusions.project.map(x => x.length))
+    const nameWidth = Math.min(longest + 5, 44, width - 22)
 
     const head = (
       <Box flexDirection="row">
-        <Text bold color="claude">md-scrub</Text>
+        <Text bold color={ORANGE}>md-scrub</Text>
         <Text> · </Text>
         <Text color={hd.state === 'on' ? 'success' : hd.state === 'paused' ? 'warning' : 'error'}>{hd.state}</Text>
         {hd.reason ? <Text dimColor> · {hd.reason}</Text> : null}
@@ -333,7 +343,7 @@ export function registerPanel(on: On) {
           {data.topics.map(t => {
             const active = !t.error && effective(t, data.settings)
             return (
-              <Box key={`row:${t.id}`} flexDirection="row">
+              <Box key={`row:${t.id}`} flexDirection="row" backgroundColor={sel?.id === t.id ? SELECTED : undefined}>
                 <Box width={nameWidth}>
                   <Text dimColor={!active} wrap="truncate">{t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>} {sentence(t.name)}</Text>
                 </Box>
@@ -415,11 +425,11 @@ export function registerPanel(on: On) {
             const excluded = isExcluded(file, [...data.exclusions.user, ...data.exclusions.project])
             const d = new Date(r.t)
             const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-            const colour = r.action === 'scrubbed' ? 'claude' : r.action === 'flagged' || r.action === 'unchecked' ? 'warning' : undefined
+            const colour = r.action === 'scrubbed' ? ORANGE : r.action === 'flagged' || r.action === 'unchecked' ? 'warning' : undefined
             return (
               <Box key={`lrow:${i}`} flexDirection="column">
                 <Button key={`l:${i}`} plain onPress={() => { choice = { row: i, options: [file, parent(file)].filter((x): x is string => !!x) }; $.ui.invalidate('ui.render') }}>
-                  <Text dimColor>{time}  </Text><Text color={colour}>{(r.action ?? '').padEnd(10)}</Text>{file}{excluded ? <Text dimColor> · excluded</Text> : null}
+                  <Text dimColor>{time}  </Text><Text color={colour}>{(r.action ?? '').padEnd(10)}</Text><Text dimColor>{folderOf(tilde(file, p.home))}</Text>{nameOf(file)}{excluded ? <Text dimColor> · excluded</Text> : null}
                 </Button>
                 {choice?.row === i ? (
                   <Box flexDirection="row" gap={2} marginLeft={8}>
@@ -454,7 +464,7 @@ export function registerPanel(on: On) {
             choice = { row: i, options: [file, parent(file)].filter((x): x is string => !!x) }
             $.ui.invalidate('ui.render')
           }}>exclude</Button> : null}
-        <Text dimColor>enter: switch   esc: close</Text>
+        <Text dimColor>{tab === 'log' ? 'enter: exclude' : 'enter: switch'}   esc: close</Text>
       </Box>
     )
 

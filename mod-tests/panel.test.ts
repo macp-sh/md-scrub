@@ -182,3 +182,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: /excluded/ })).toBeDefined()
   })
 }
+
+test('the log collapses the same action on the same file within a minute', () => {
+  const line = (t: string, action: string, file = '/p/a.md') => JSON.stringify({ t, event: 'action', action, file })
+  const text = [
+    line('2026-10-11T03:00:00Z', 'flagged'),
+    line('2026-10-11T03:00:20Z', 'flagged'),
+    line('2026-10-11T03:00:40Z', 'flagged'),
+    line('2026-10-11T03:05:00Z', 'flagged'),
+    line('2026-10-11T03:05:10Z', 'scrubbed'),
+  ].join('\n')
+  expect(logActions(text).map(e => `${e.t.slice(11, 16)} ${e.action}`)).toEqual(['03:05 scrubbed', '03:05 flagged', '03:00 flagged'])
+})
