@@ -1,20 +1,21 @@
 import type { Register, EngineInterface } from 'claude-code'
+import { registerPanel } from './panel'
 
-// md-scrub's hooks run beneath this mod and write progress records to its state folder:
-// $XDG_STATE_HOME/md-scrub, else ~/.local/state/md-scrub (see src/config.ts).
+// md-scrub's hooks run beneath this mod and write progress records to its state folder,
+// ~/.claude/md-scrub/state (see src/config.ts).
 let stateDir: string | undefined
 const SHOW_AFTER_MS = 300 // fast checks never flash a "running" line
 const POLL_MS = 250
 const OUTCOME_MS = 6000 // how long a clean-up or block stays on the line before it clears
 // Phases md-scrub only reaches once it has found unwanted content; earlier phases stay off the line.
-const FOUND = /^(cleaning|re-checking)/
+const FOUND = /^(scrubbing|re-checking)/
 
 type CallRecord = {
   id: string
   file: string
   phase: string
   startedAt: number
-  outcome?: 'clean' | 'cleaned' | 'blocked' | 'moved'
+  outcome?: 'clean' | 'scrubbed' | 'flagged' | 'unchecked' | 'error'
   edits?: number
   reason?: string
 }
@@ -25,7 +26,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 async function stateFolder($: EngineInterface): Promise<string> {
   if (stateDir) return stateDir
-  const { stdout } = await $.process.run(['sh', '-c', 'printf %s "${XDG_STATE_HOME:-$HOME/.local/state}/md-scrub"'])
+  const { stdout } = await $.process.run(['sh', '-c', 'printf %s "$HOME/.claude/md-scrub/state"'])
   stateDir = stdout
   return stateDir
 }
@@ -41,14 +42,14 @@ async function readJson<T>($: EngineInterface, path: string): Promise<T | undefi
 // Claude Code prefixes each line with the plugin's name, so the lines start at the verb.
 // Only outcomes where md-scrub acted; a clean pass shows nothing.
 export function outcomeLine(r: CallRecord): string | undefined {
-  if (r.outcome === 'cleaned') return `cleaned ${base(r.file)}${r.edits ? ` (${plural(r.edits, 'edit')})` : ''}`
-  if (r.outcome === 'blocked') return `blocked ${r.reason ?? base(r.file)}`
-  if (r.outcome === 'moved') return `moved ${r.file} to the scratchpad`
+  if (r.outcome === 'scrubbed') return `scrubbed ${base(r.file)}${r.edits ? ` (${plural(r.edits, 'edit')})` : ''}`
+  if (r.outcome === 'flagged') return `flagged ${base(r.file)}${r.reason ? ` (${r.reason})` : ''}`
+  if (r.outcome === 'unchecked') return `not checked ${base(r.file)} (OpenRouter isn't responding)`
   return undefined
 }
 
 export function progressLine(r: CallRecord): string | undefined {
-  return !r.outcome && FOUND.test(r.phase) ? `cleaning ${base(r.file)}…` : undefined
+  return !r.outcome && FOUND.test(r.phase) ? `scrubbing ${base(r.file)}…` : undefined
 }
 
 // A setup problem from session start (src/progress.ts SETUP_FILE), shown whenever nothing else is.
@@ -106,10 +107,14 @@ async function watch<R>($: EngineInterface, id: string, run: () => Promise<R>): 
   }
 }
 
+// hooks.json takes one module: this one registers the status line and the /md-scrub panel.
 export const register: Register = on => {
+  registerPanel(on)
+
   // A reload leaves the previous load's line on screen: start from the last setup check, which a
   // reload doesn't rerun. A new session reruns it in classic.SessionStart, below.
   on('session.start', async ($, e, next) => {
+    await $.command.register({ name: 'md-scrub', description: 'Choose what md-scrub checks and see what it did' }) // opened by panel.tsx
     const result = await next(e)
     await refreshWarning($, e.cwd)
     return result

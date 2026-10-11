@@ -6,11 +6,12 @@
 import { mkdtempSync, mkdirSync, writeFileSync, cpSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setProjectRoot } from "../src/config.ts";
 
 export const ROOT = join(import.meta.dir, "..");
 export const CLI = join(ROOT, "src", "cli.ts");
 export const JEV_MOCK = join(import.meta.dir, "jev-mock.ts");
-export const STATE = join(process.env.XDG_STATE_HOME!, "md-scrub");
+export const STATE = join(process.env.HOME!, ".claude", "md-scrub", "state");
 export const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), `md-scrub-${prefix}-`));
 
 // A bin folder holding only the fake claude, with absolute paths so PATH needn't hold Bun.
@@ -20,22 +21,24 @@ chmodSync(join(FAKE_BIN, "claude"), 0o755);
 export const PATH_WITH_CLAUDE = `${FAKE_BIN}:/usr/bin:/bin`;
 export const PATH_WITHOUT_CLAUDE = "/usr/bin:/bin";
 
-// By default Jev has a key but can't be reached, so the keyword fallback decides; tests of Jev itself
-// set FAKE_JEV, and tests of a missing key clear OPENROUTER_API_KEY.
-export const ENV: Record<string, string | undefined> = { ...process.env, PATH: PATH_WITH_CLAUDE, OPENROUTER_API_KEY: "test", FAKE_JEV: "down", MD_SCRUB_INNER: "" };
+// By default the hooks have a key and the Jev mock answers from markers (see jev-mock.ts); tests of an
+// outage set FAKE_JEV, and tests of a missing key clear OPENROUTER_API_KEY.
+export const ENV: Record<string, string | undefined> = { ...process.env, PATH: PATH_WITH_CLAUDE, OPENROUTER_API_KEY: "test", FAKE_JEV: "score", MD_SCRUB_INNER: "" };
 
-// A project whose .md-scrub/ holds the fixture topic (broad licensing keywords) with the shipped topic
-// switched off, so editing the shipped definition breaks nothing here.
+// A project whose .claude/md-scrub/ holds the fixture topic with the shipped topic switched off, so
+// editing the shipped definition breaks nothing here. Hook calls pass the project as their cwd.
 export function fixtureProject(): string {
   const dir = tmp("proj");
-  cpSync(join(import.meta.dir, "fixture"), join(dir, ".md-scrub"), { recursive: true });
+  cpSync(join(import.meta.dir, "fixture"), join(dir, ".claude", "md-scrub"), { recursive: true });
   return dir;
 }
 
-// A project with its own .md-scrub/ (config.json, topic files, other raw files) and no fixture.
+// A project with its own .claude/md-scrub/ (config.json, topic files, other raw files) and no fixture.
+// It also becomes this test process's project, for in-process loadScrubConfig calls.
 export function project(opts: { config?: unknown; topics?: Record<string, unknown>; raw?: Record<string, string> } = {}) {
   const dir = tmp("proj");
-  const folder = join(dir, ".md-scrub");
+  setProjectRoot(dir);
+  const folder = join(dir, ".claude", "md-scrub");
   mkdirSync(join(folder, "topics"), { recursive: true });
   if (opts.config) writeFileSync(join(folder, "config.json"), JSON.stringify(opts.config));
   for (const [id, t] of Object.entries(opts.topics ?? {})) writeFileSync(join(folder, "topics", `${id}.json`), JSON.stringify(t));

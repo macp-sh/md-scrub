@@ -116,9 +116,10 @@ export async function pool<T, R>(items: T[], fn: (item: T) => Promise<R>, limit 
   return out;
 }
 
-// Keywords and Jev both run on every chunk. Jev decides when it can answer: keyword hits alone would
-// also catch text that only describes a rule ("never write what vendors' terms prohibit"), so they
-// serve as hints for the clean-up. When Jev can't answer, keywords decide on their own.
+// Keywords and Jev both run on every chunk. Jev alone decides: keyword hits would also catch text that
+// only describes a rule ("never write what vendors' terms prohibit"), so they only guide the clean-up.
+// When Jev can't answer for any chunk, nothing is flagged and `jevError` says why: md-scrub stands
+// down rather than act on a partial or keyword-only check.
 // Jev's "mostly" answers give the share of the whole text that is mainly a topic.
 export async function detect(text: string, config: ScrubConfig): Promise<Detection> {
   const chunks = chunk(text).filter((c) => c.body.trim());
@@ -128,9 +129,7 @@ export async function detect(text: string, config: ScrubConfig): Promise<Detecti
     const r = await jevScore(c.body, config);
     if ("error" in r) jevError = r.error;
     const score = "error" in r ? undefined : r;
-    const topics = score
-      ? Object.entries(score.byTopic).filter(([, p]) => p >= config.thresholds.flag).map(([id]) => id)
-      : [...new Set(hits.map((h) => h.topic))];
+    const topics = score ? Object.entries(score.byTopic).filter(([, p]) => p >= config.thresholds.flag).map(([id]) => id) : [];
     return {
       flagged: topics.length ? ({ ...c, keywordHits: hits, jevScore: score?.p, topics } as FlaggedChunk) : null,
       mostly: score?.mostly,
@@ -142,7 +141,8 @@ export async function detect(text: string, config: ScrubConfig): Promise<Detecti
     results.every((r) => r.mostly !== undefined) && total
       ? results.reduce((n, r) => n + r.mostly! * r.length, 0) / total
       : undefined;
-  return { flagged: results.map((r) => r.flagged).filter((f): f is FlaggedChunk => f !== null), jevError, mostly };
+  if (jevError) return { flagged: [], jevError };
+  return { flagged: results.map((r) => r.flagged).filter((f): f is FlaggedChunk => f !== null), mostly };
 }
 
 export function describe(flagged: FlaggedChunk[]): string {

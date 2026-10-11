@@ -3,11 +3,13 @@ import { test, expect, describe } from "bun:test";
 import { join } from "node:path";
 import { keywordHits, chunk, joinChunks, detect } from "../src/detect.ts";
 import { isDeletion, clean } from "../src/clean.ts";
-import { budget } from "../src/config.ts";
+import { budget, setProjectRoot } from "../src/config.ts";
 import { loadScrubConfig } from "../src/scrub.ts";
 import { fixtureProject } from "./helpers.ts";
 
-const FIX = loadScrubConfig(join(fixtureProject(), "x.md"));
+const P = fixtureProject();
+setProjectRoot(P);
+const FIX = loadScrubConfig(join(P, "x.md"));
 
 describe("keywords", () => {
   test("flag each line that matches", () => {
@@ -86,9 +88,10 @@ describe("Jev", () => {
     expect(d.mostly).toBeCloseTo(want, 5);
   });
 
-  test("without a key, keywords decide and no share is given", async () => {
+  test("when Jev can't answer, nothing is flagged and the error says why: md-scrub stands down", async () => {
     const d = await detect("We use zod (MIT).", FIX);
-    expect(d.flagged).toHaveLength(1);
+    expect(d.flagged).toEqual([]);
+    expect(d.jevError).toBe("OPENROUTER_API_KEY not set");
     expect(d.mostly).toBeUndefined();
   });
 });

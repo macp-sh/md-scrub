@@ -1,8 +1,9 @@
 # Development notes, handover and decisions: kept locally, not published
 claude/
 
-# Claude Code's per-project settings and local state
-.claude/
+# Claude Code's per-project settings and local state, except md-scrub's own project settings
+.claude/*
+!.claude/md-scrub/
 
 # Secrets and runtime state
 .env

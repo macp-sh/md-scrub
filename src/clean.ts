@@ -128,7 +128,7 @@ export async function clean(
   onProgress: ((phase: string) => void) | undefined,
   scrub: ScrubConfig,
 ): Promise<CleanResult> {
-  onProgress?.(`cleaning ${flagged.length} section${flagged.length === 1 ? "" : "s"}`);
+  onProgress?.(`scrubbing ${flagged.length} section${flagged.length === 1 ? "" : "s"}`);
   const byIndex = new Map(flagged.map((f) => [f.index, f]));
   const results = await pool(chunk(text), async (c): Promise<{ body: string; after: string; edits: Edit[] } | { error: string }> => {
     const f = byIndex.get(c.index);

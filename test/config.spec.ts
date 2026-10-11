@@ -1,10 +1,11 @@
-// Topics, settings and ignore files: what md-scrub keeps out, and where.
-import { test, expect, describe } from "bun:test";
+// Topics, settings and exclusions: what md-scrub keeps out, and where (built in, user, project).
+import { test, expect, describe, beforeEach } from "bun:test";
 import { mkdirSync, writeFileSync, cpSync } from "node:fs";
 import { join } from "node:path";
 import { loadScrubConfig, jevQuestions, rule, ScrubConfigError, MAX_QUESTION_CHARS } from "../src/scrub.ts";
 import { keywordHits } from "../src/detect.ts";
-import { project, fixtureProject, run, pre, write, untouched, decision, DOC, tmp } from "./helpers.ts";
+import { setProjectRoot } from "../src/config.ts";
+import { project, fixtureProject, run, pre, write, untouched, DOC, tmp } from "./helpers.ts";
 
 const secrets = {
   name: "credentials",
@@ -14,6 +15,9 @@ const secrets = {
 };
 
 describe("the shipped topic", () => {
+  // Outside any project, so only built-in (and user) settings apply.
+  beforeEach(() => setProjectRoot(undefined));
+
   test("is third-party-terms from defaults/", () => {
     const c = loadScrubConfig();
     expect(c.topics.map((t) => t.id)).toEqual(["third-party-terms"]);
@@ -35,7 +39,7 @@ describe("the shipped topic", () => {
 });
 
 describe("topic files", () => {
-  test("a project's topic is added, named by its file, for that project only", () => {
+  test("a project's topic is added, named by its file, for files in that project only", () => {
     const p = project({ topics: { secrets } });
     const c = loadScrubConfig(p.file);
     expect(c.topics.map((t) => t.id)).toEqual(["third-party-terms", "secrets"]);
@@ -61,12 +65,13 @@ describe("topic files", () => {
     expect(replaced.examples.is.length).toBe(base.examples.is.length);
   });
 
-  test("a topic in ~/.config/md-scrub/topics applies in every project", () => {
+  test("a topic in ~/.claude/md-scrub/topics applies in every project", () => {
     const home = tmp("home");
-    mkdirSync(join(home, ".config", "md-scrub", "topics"), { recursive: true });
-    writeFileSync(join(home, ".config", "md-scrub", "topics", "secrets.json"), JSON.stringify(secrets));
-    const r = run("pre", write(join(tmp("anywhere"), "notes.md"), "OPENAI_KEY=sk-abc123"), { HOME: home }).json;
-    expect(decision(r)).toBe("deny");
+    mkdirSync(join(home, ".claude", "md-scrub", "topics"), { recursive: true });
+    writeFileSync(join(home, ".claude", "md-scrub", "topics", "secrets.json"), JSON.stringify(secrets));
+    const dir = tmp("anywhere");
+    const r = run("pre", { ...write(join(dir, "notes.md"), "# Notes\n\nSECRETS for the demo.\n"), cwd: dir }, { HOME: home }).json;
+    expect(r.hookSpecificOutput.additionalContext).toContain("credentials");
   });
 
   test("all topics go in one Jev request, so topics too large together are rejected", () => {
@@ -76,7 +81,7 @@ describe("topic files", () => {
   });
 });
 
-describe("settings in .md-scrub/config.json", () => {
+describe("settings in .claude/md-scrub/config.json", () => {
   test("switch a topic off, or md-scrub as a whole", () => {
     expect(loadScrubConfig(project({ config: { topics: { "third-party-terms": { enabled: false } } } }).file).topics).toEqual([]);
     const off = loadScrubConfig(project({ config: { enabled: false }, topics: { secrets } }).file);
@@ -90,14 +95,17 @@ describe("settings in .md-scrub/config.json", () => {
 
   test('"enabled": false stops the hooks for that project, and only that project', () => {
     const off = fixtureProject();
-    writeFileSync(join(off, ".md-scrub", "config.json"), JSON.stringify({ enabled: false }));
-    expect(run("pre", write(join(off, "a.md"), "licensed under MIT")).out).toBe("");
-    expect(pre(write(join(fixtureProject(), "a.md"), DOC("licensed under MIT"))).hookSpecificOutput.updatedInput).toBeDefined();
+    writeFileSync(join(off, ".claude", "md-scrub", "config.json"), JSON.stringify({ enabled: false }));
+    expect(run("pre", { ...write(join(off, "a.md"), "licensed under MIT"), cwd: off }).out).toBe("");
+    const on = fixtureProject();
+    expect(pre({ ...write(join(on, "a.md"), DOC("licensed under MIT")), cwd: on }).hookSpecificOutput.updatedInput).toBeDefined();
   });
 });
 
 describe("validation", () => {
-  test("rejects broken settings and topic files, naming the problem", () => {
+  const load = (opts: Parameters<typeof project>[0]) => loadScrubConfig(project(opts).file);
+
+  test("a broken topic file turns off only that topic, naming the problem", () => {
     const cases: [Parameters<typeof project>[0], string][] = [
       [{ topics: { secrets: { ...secrets, keywords: [{ label: "bad", pattern: "(" }] } } }, 'keyword "bad" has an invalid pattern'],
       [{ topics: { secrets: { ...secrets, keywords: [{ label: "sticky", pattern: "a", flags: "gi" }] } } }, "can't use the g or y flags"],
@@ -105,32 +113,39 @@ describe("validation", () => {
       [{ topics: { secrets: { ...secrets, examples: { is: ["x"], isNot: [] } } } }, '"examples.isNot"'],
       [{ topics: { Secrets: secrets } }, "kebab-case"],
       [{ topics: { secrets: { ...secrets, id: "creds" } } }, '"id" is the file name'],
-      [{ topics: { secrets: { ...secrets, examples: { is: ["x".repeat(50_000)], isNot: ["y"] } } } }, "keep them under"],
-      [{ config: { thresholds: { flag: 2 } } }, '"thresholds.flag"'],
-      [{ config: { enabled: "no" } }, '"enabled" must be true or false'],
+      [{ raw: { "topics/secrets.json": "{ not json" } }, "secrets.json: not valid JSON"],
       [{ config: { topics: { nope: { enabled: false } } } }, "no topics/nope.json defines it"],
-      [{ raw: { "config.json": "{ not json" } }, "config.json: not valid JSON"],
     ];
     for (const [opts, message] of cases) {
-      const p = project(opts);
-      let error: unknown;
-      try { loadScrubConfig(p.file); } catch (e) { error = e; }
-      expect(error, message).toBeInstanceOf(ScrubConfigError);
-      expect((error as Error).message, message).toContain(message);
+      const c = load(opts);
+      expect(c.topics.map((t) => t.id), message).toEqual(["third-party-terms"]);
+      expect(c.errors.join("\n"), message).toContain(message);
     }
   });
 
-  test("a broken file switches the hooks off visibly instead of failing silently", () => {
-    const p = project({ topics: { secrets: { ...secrets, keywords: [{ label: "bad", pattern: "(" }] } } });
+  test("a broken settings file, or topics too large together, turn md-scrub off", () => {
+    const cases: [Parameters<typeof project>[0], string][] = [
+      [{ topics: { secrets: { ...secrets, examples: { is: ["x".repeat(50_000)], isNot: ["y"] } } } }, "keep them under"],
+      [{ config: { thresholds: { flag: 2 } } }, '"thresholds.flag"'],
+      [{ config: { enabled: "no" } }, '"enabled" must be true or false'],
+      [{ raw: { "config.json": "{ not json" } }, "config.json: not valid JSON"],
+    ];
+    for (const [opts, message] of cases) {
+      let error: unknown;
+      try { load(opts); } catch (e) { error = e; }
+      expect(error, message).toBeInstanceOf(ScrubConfigError);
+      expect((error as Error).message, message).toContain(message);
+    }
+    const p = project({ raw: { "config.json": "{ not json" } });
     const r = pre({ ...write(p.file, "licensed under MIT"), cwd: p.dir });
-    expect(r.systemMessage).toContain("scrub config error");
+    expect(r.systemMessage).toContain("settings error");
     expect(r.hookSpecificOutput).toBeUndefined();
   });
 });
 
-describe("ignore files", () => {
+describe("exclusions", () => {
   const p = fixtureProject();
-  writeFileSync(join(p, ".md-scrub", "ignore"), "# saved docs stay verbatim\nreadme.md\nclaude/docs/\nnotes/*.md\n");
+  writeFileSync(join(p, ".claude", "md-scrub", "exclusions"), "# saved docs stay verbatim\nreadme.md\nclaude/docs/\nnotes/*.md\n");
   const at = (rel: string, content = DOC("zod (MIT)")) => pre({ ...write(join(p, rel), content), cwd: p });
 
   test("a project's names match in any folder, without regard to case", () => {
@@ -138,26 +153,20 @@ describe("ignore files", () => {
     expect(untouched(at("pkg/Readme.md"))).toBe(true);
   });
 
-  test("a project's folders and globs are relative to the folder holding .md-scrub/", () => {
+  test("a project's folders and globs are relative to the project root", () => {
     expect(untouched(at("claude/docs/ref.md"))).toBe(true);
     expect(untouched(at("notes/a.md"))).toBe(true);
     expect(at("sub/notes/a.md").hookSpecificOutput.updatedInput).toBeDefined();
     expect(at("docs/a.md").hookSpecificOutput.updatedInput).toBeDefined();
   });
 
-  test("are found from the target, whatever the session's folder, for Bash targets too", () => {
-    expect(untouched(pre({ ...write(join(p, "README.md"), "© 2026 Acme"), cwd: tmp("elsewhere") }))).toBe(true);
-    expect(untouched(pre({ ...{ tool_name: "Bash", tool_input: { command: "echo '© 2026' > README.md" } }, cwd: p }))).toBe(true);
-  });
-
-  test("only the nearest .md-scrub/ applies, as for settings and topics", () => {
-    const outer = fixtureProject();
-    writeFileSync(join(outer, ".md-scrub", "ignore"), "readme.md\n");
-    cpSync(join(outer, ".md-scrub", "topics"), join(outer, "pkg", ".md-scrub", "topics"), { recursive: true });
-    cpSync(join(outer, ".md-scrub", "config.json"), join(outer, "pkg", ".md-scrub", "config.json"));
-    const file = (rel: string) => pre({ ...write(join(outer, rel), DOC("zod (MIT)")), cwd: outer });
-    expect(untouched(file("README.md"))).toBe(true);
-    expect(file("pkg/README.md").hookSpecificOutput.updatedInput).toBeDefined();
+  test("a project's exclusions and settings don't reach files outside it", () => {
+    // README.md is excluded in the project, and the fixture topic replaces the shipped one there; a
+    // file outside the project gets neither, so the shipped topic scrubs it.
+    const out = pre({ ...write(join(tmp("outside"), "README.md"), DOC("zod (MIT)")), cwd: p }).hookSpecificOutput;
+    expect(out.updatedInput).toBeDefined();
+    expect(out.additionalContext).toContain("third-party legal terms");
+    expect(out.additionalContext).not.toContain("Test fixture rule");
   });
 
   test("the built-in list skips licence files by name in any folder and case", () => {
@@ -166,10 +175,10 @@ describe("ignore files", () => {
     expect(untouched(at("NOTICE.md"))).toBe(true);
   });
 
-  test("globs in ~/.config/md-scrub/ignore match in any folder", () => {
+  test("globs in ~/.claude/md-scrub/exclusions match in any folder", () => {
     const home = tmp("home");
-    mkdirSync(join(home, ".config", "md-scrub"), { recursive: true });
-    writeFileSync(join(home, ".config", "md-scrub", "ignore"), "docs/legal/\n");
+    mkdirSync(join(home, ".claude", "md-scrub"), { recursive: true });
+    writeFileSync(join(home, ".claude", "md-scrub", "exclusions"), "docs/legal/\n");
     const userAt = (rel: string) => run("pre", { ...write(join(p, rel), DOC("zod (MIT)")), cwd: p }, { HOME: home }).json;
     expect(untouched(userAt("docs/legal/terms.md"))).toBe(true);
     expect(untouched(userAt("site/Docs/Legal/terms.md"))).toBe(true);

@@ -1,7 +1,7 @@
-// The end-of-turn sweep: which files count as Claude's, how they are cleaned or moved, and how
+// The end-of-turn sweep: which files count as Claude's, how they are scrubbed or flagged, and how
 // repeated problems are handed to the user.
 import { test, expect, describe } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, utimesSync, chmodSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, utimesSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { filesChangedDuring } from "../src/hooks.ts";
 import { readTurn, record, startTurn } from "../src/turn.ts";
@@ -10,17 +10,15 @@ import { STATE, fixtureProject, run, untouched, write, DOC, stateJson, sessionId
 const DIRTY = DOC("Released, licensed under MIT.");
 
 // A turn in a fresh project: turn-start, then any number of Bash commands bracketing file writes.
-function turn(opts: { scratchpad?: boolean } = {}) {
+function turn() {
   const dir = fixtureProject();
   const id = sessionId();
-  const scratchpad = opts.scratchpad ? tmp("pad") : undefined;
-  const base = { session_id: id, cwd: dir, ...(scratchpad ? { scratchpad_dir: scratchpad } : {}) };
+  const base = { session_id: id, cwd: dir };
   run("turn-start", base);
   let n = 0;
   return {
     dir,
     id,
-    scratchpad,
     file: (name: string) => join(dir, name),
     // The files are written "by" a Bash command: its pre and post hooks bracket the writes.
     bash: (during: () => void, cwd = dir) => {
@@ -36,7 +34,7 @@ function turn(opts: { scratchpad?: boolean } = {}) {
 const context = (r: any): string => r?.hookSpecificOutput?.additionalContext ?? "";
 
 describe("which files are Claude's", () => {
-  test("a file changed during a command is cleaned; older files and clean ones are left alone", () => {
+  test("a file changed during a command is scrubbed; older files and clean ones are left alone", () => {
     const t = turn();
     writeFileSync(t.file("old.md"), "© 2020 Old");
     utimesSync(t.file("old.md"), new Date(0), new Date(0));
@@ -158,34 +156,16 @@ describe("problems", () => {
 });
 
 describe("files that are mostly the topic, written by a shell command", () => {
-  const JEV = { OPENROUTER_API_KEY: "test", FAKE_JEV: "score" };
   const clause = (n: number) => `## ${n}. Section\n\nMOSTLY These terms govern your use of the service. You may not resell, sublicense or share access, and we may suspend accounts that do.\n`;
   const terms = `# Terms\n\n${[1, 2, 3, 4, 5].map(clause).join("\n")}`;
 
-  test("are moved to the session scratchpad, and Claude is told where", () => {
-    const t = turn({ scratchpad: true });
-    t.bash(() => writeFileSync(t.file("terms.md"), terms));
-    const ctx = context(t.stop(false, JEV));
-    expect(ctx).toContain("moved");
-    expect(ctx).toContain(join(t.scratchpad!, "terms.md"));
-    expect(existsSync(t.file("terms.md"))).toBe(false);
-    expect(readFileSync(join(t.scratchpad!, "terms.md"), "utf8")).toBe(terms);
-    expect(stateJson(`calls/stop-${t.id}.json`).outcome).toBe("moved");
-  });
-
-  test("never overwrite a file already in the scratchpad", () => {
-    const t = turn({ scratchpad: true });
-    writeFileSync(join(t.scratchpad!, "terms.md"), "earlier");
-    t.bash(() => writeFileSync(t.file("terms.md"), terms));
-    t.stop(false, JEV);
-    expect(readFileSync(join(t.scratchpad!, "terms.md"), "utf8")).toBe("earlier");
-    expect(readFileSync(join(t.scratchpad!, "terms-2.md"), "utf8")).toBe(terms);
-  });
-
-  test("go through the normal clean-up when the session has no scratchpad", () => {
+  test("are left as written and flagged, and Claude is told to ask the user", () => {
     const t = turn();
     t.bash(() => writeFileSync(t.file("terms.md"), terms));
-    expect(context(t.stop(false, JEV))).toContain("couldn't remove");
-    expect(existsSync(t.file("terms.md"))).toBe(true);
+    const ctx = context(t.stop());
+    expect(ctx).toContain("left these files as written");
+    expect(ctx).toContain(t.file("terms.md"));
+    expect(readFileSync(t.file("terms.md"), "utf8")).toBe(terms);
+    expect(stateJson(`calls/stop-${t.id}.json`)).toMatchObject({ outcome: "flagged", reason: "1 file" });
   });
 });

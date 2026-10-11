@@ -1,31 +1,40 @@
 // Progress and outcome records the md-scrub-status mod reads to draw its status line.
 //   state/calls/<id>.json     one per hook call: what it's doing now, then how it ended
-import { writeFileSync, readdirSync, statSync, unlinkSync, mkdirSync, renameSync } from "node:fs";
+import { writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_DIR, LOG_FILE, safe } from "./config.ts";
 
 const CALLS_DIR = join(STATE_DIR, "calls");
 const KEEP_CALLS_MS = 60 * 60 * 1000;
 const KEEP_TURNS_MS = 24 * 60 * 60 * 1000;
-// Past this size the log moves to log.old.jsonl (replacing the previous one) and starts afresh.
-const MAX_LOG_BYTES = 5 * 1024 * 1024;
+// Past this size the log moves to log.old.jsonl (replacing the previous one) and starts afresh. The
+// panel reads it through the mod API, which refuses files over 4 MiB.
+const MAX_LOG_BYTES = 2 * 1024 * 1024;
 
 // The setup problem the mod keeps on the status line until it's fixed, written at session start:
 //   state/setup.json   { cwd, line }, line null when all is well
 export const SETUP_FILE = join(STATE_DIR, "setup.json");
 
-export type Outcome = "clean" | "cleaned" | "blocked" | "moved" | "error";
+export type Outcome = "clean" | "scrubbed" | "flagged" | "unchecked" | "error";
 
 export type CallRecord = {
   id: string;
   file: string;
-  phase: string; // human-readable: "checking", "cleaning 1 section", "re-checking", "done"
+  phase: string; // human-readable: "checking", "scrubbing 1 section", "re-checking", "done"
   startedAt: number;
   endedAt?: number;
   outcome?: Outcome;
   edits?: number;
   reason?: string;
 };
+
+export function readCall(id: string): CallRecord | undefined {
+  try {
+    return JSON.parse(readFileSync(join(CALLS_DIR, `${safe(id)}.json`), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
 
 export function writeJson(path: string, value: unknown) {
   const tmp = `${path}.tmp`;

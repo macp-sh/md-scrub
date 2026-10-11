@@ -1,0 +1,11 @@
+# Licence files are the project's own, so md-scrub never checks them. These names match in any folder.
+LICENSE
+LICENSE.*
+LICENCE
+LICENCE.*
+LICENSE-MIT*
+LICENSE-APACHE*
+COPYING
+COPYING.*
+NOTICE
+NOTICE.*

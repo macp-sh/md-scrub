@@ -1,7 +1,8 @@
 // Preloaded into hook processes in tests (bun --preload), so no test reaches OpenRouter. FAKE_JEV picks
 // how Jev behaves:
-//   score    answers from markers: LICENSING or "licensed under" flags a chunk; MOSTLY flags it and
-//            also marks it as mostly the topic
+//   score    answers from markers. For the fixture and shipped topics: LICENSING, "licensed under",
+//            "(MIT)" or © flags a chunk; MOSTLY flags it and also marks it as mostly the topic. Any
+//            other topic is flagged only by its id in capitals (SECRETS for secrets).
 //   down     the network fails
 //   error    the service answers HTTP 500
 //   missing  a reply without answers
@@ -20,7 +21,9 @@ globalThis.fetch = (async (input: any, init?: any) => {
   const answers: Record<string, { noul: number }> = {};
   for (const id of Object.keys(body.questions)) {
     const mostly = id.endsWith("__mostly");
-    const hit = mostly ? /MOSTLY/.test(chunk) : /LICENSING|MOSTLY|licensed under/.test(chunk);
+    const topic = id.replace(/__mostly$/, "");
+    const ours = topic === "fixture-licensing" || topic === "third-party-terms";
+    const hit = !ours ? chunk.includes(topic.toUpperCase()) : mostly ? /MOSTLY/.test(chunk) : /LICENSING|MOSTLY|licensed under|\(MIT\)|©/.test(chunk);
     answers[id] = { noul: hit ? 0.95 : mostly ? 0.05 : 0.02 };
   }
   return Response.json({ model: "fake-jev", answers, usage: { cost: 0 } });

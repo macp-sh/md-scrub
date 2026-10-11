@@ -20,5 +20,5 @@ const hits = rows.filter((r) => r.label).length;
 for (const t of [0.3, 0.4, 0.5, 0.6, 0.7]) {
   const caught = rows.filter((r) => r.label && r.p >= t).length;
   const falseBlocks = rows.filter((r) => !r.label && r.p >= t).length;
-  console.log(`threshold ${t}: hits caught ${caught}/${hits}, false blocks ${falseBlocks}/${rows.length - hits}`);
+  console.log(`threshold ${t}: hits caught ${caught}/${hits}, false flags ${falseBlocks}/${rows.length - hits}`);
 }

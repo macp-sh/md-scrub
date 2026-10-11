@@ -22,48 +22,59 @@ Claude Code asks for an OpenRouter key for Jev when the plugin is enabled. If yo
 
 ## What it does
 
-- **Removes unwanted content** from Markdown that Claude writes or edits, and tells Claude what changed.
-- **Blocks whole documents** that are mostly unwanted content, such as a saved terms of service page.
-- **Checks files written by commands and scripts** at the end of each turn.
+- **Scrubs unwanted content** from Markdown that Claude writes or edits, before it's saved, and tells Claude what changed.
+- **Checks files written by commands and scripts** at the end of each turn, and scrubs them there.
+- **Flags whole documents** that are mostly unwanted content, such as a saved terms of service page: they're left as written, and Claude and you are told, so you decide.
+- **Never blocks a write.** If OpenRouter isn't responding, md-scrub stands down and says so.
 - **Leaves alone** files you edit yourself, and licence files such as `LICENSE` and `NOTICE`.
 
 md-scrub ships with one example topic, `third-party-terms`, which stops Claude writing **third-party legal terms** into `.md` files: what another company's terms of service, licence or policy says you can or can't do. Your own project's licence, and mentions like "zod (MIT)", are left alone.
 
 ## Add your own topics
 
-A topic is a JSON file describing content to keep out, such as credentials and tokens, customer or personal data, internal hostnames, or unreleased product names.
+A topic is a JSON file describing content to keep out, such as vendor documentation pasted in verbatim, unverified performance claims, or medical and financial advice. Topics are checked by sending text to OpenRouter, so don't use them for secrets or personal data; a dedicated secret scanner such as GitGuardian's ggshield suits those better.
 
-Topics live in a `topics` folder and are layered like Claude Code's own settings: the built-in topic, then yours in `~/.config/md-scrub/topics/` (every project), then a project's in `.md-scrub/topics/`, with the more specific one winning. The file name is the topic's id, as used in `config.json`. For example, `credentials.json`:
+Topics live in a `topics` folder at one of two scopes, as in Claude Code's own settings: **user**, `~/.claude/md-scrub/topics/` (you, in every project), and **project**, `.claude/md-scrub/topics/` in the project (everyone working in it, once committed). The file name is the topic's id. For example, `vendor-docs.json`:
 
 ```json
 {
-  "name": "credentials",
-  "description": "API keys, passwords, tokens and private keys.",
+  "name": "copied vendor documentation",
+  "description": "Passages pasted verbatim from another company's documentation or website.",
   "examples": {
-    "is": ["API_TOKEN=tok_8f2k9x7q..."],
-    "isNot": ["Put your key in .env"]
+    "is": ["To create a webhook, open the Dashboard, choose Developers, then Webhooks, and click Add endpoint."],
+    "isNot": ["Our webhook handler checks the signature before processing an event."]
   }
 }
 ```
 
-`is` lists examples to remove and `isNot` examples to keep. A few of each makes the topic more accurate. The built-in topic, [`third-party-terms.json`](defaults/topics/third-party-terms.json), shows every field.
+`is` lists examples to remove and `isNot` examples to keep. A few of each makes the topic more accurate. The built-in topic, [`third-party-terms.json`](defaults/topics/third-party-terms.json), shows every field; to change it, copy it into your topics (the panel's **c** does this) and edit the copy.
 
 ## How it works
 
 1. **A PreToolUse hook** catches every Markdown write from Claude's Write and Edit tools before it's saved, so the check can't be skipped. A Stop hook checks files that commands and scripts wrote at the end of each turn.
 2. **[Jev](https://docs.typesafe.ai)**, a fast classifier reached through OpenRouter, scores the new text against your topics. Most writes stop here and are saved as written.
-3. **Claude Haiku 5.5** runs only when Jev flags something. It runs through `claude -p` (Claude Code's headless mode) with your existing login, so there's no Anthropic API key to set up, and proposes the smallest edits that remove the flagged text. md-scrub accepts edits that only delete text, then has Jev check the result again.
+3. **Claude Haiku 5.5** runs only when Jev flags something. It runs through `claude -p` (Claude Code's headless mode) with your existing login, so there's no Anthropic API key to set up, and proposes the smallest edits that remove the flagged text. md-scrub accepts edits that only delete text, then has Jev check the result again. If it can't remove something safely, it leaves the text and tells Claude what to remove.
 4. **A Claude Code mod** shows what md-scrub changed in the status line.
 
-## Turn it off or skip files
+## The /md-scrub panel
 
-All of these go in a `.md-scrub/` folder at the top of your project.
+Type `/md-scrub` in a session to see and change what md-scrub does:
+
+| Tab | For |
+| :- | :- |
+| **Topics** | Switch each topic on or off for **User** (every project) or this project |
+| **Exclusions** | Files and folders md-scrub never checks, such as `legal/`, at either scope |
+| **Log** | What md-scrub scrubbed or flagged recently; **e** excludes a file or its folder |
+
+## Settings files
+
+The panel writes plain files, which you can also edit or commit. They live in `~/.claude/md-scrub/` (user) and `.claude/md-scrub/` in the project (project overrides user).
 
 | To | File | Contents |
 | :- | :- | :- |
-| Switch md-scrub off in this project | `config.json` | `{ "enabled": false }` |
+| Switch md-scrub off | `config.json` | `{ "enabled": false }` |
 | Turn off the built-in topic, keep your own | `config.json` | `{ "topics": { "third-party-terms": { "enabled": false } } }` |
-| Skip files or folders | `ignore` | One per line, such as `legal/` or `docs/privacy.md` |
+| Exclude files or folders | `exclusions` | One per line, such as `legal/` or `docs/privacy.md` |
 
 ## Privacy and cost
 

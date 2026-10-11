@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Entry point for md-scrub's Claude Code hooks: `cli.ts <event>`, reading the hook's JSON on stdin.
 import { pre, post, stop, turnStart, sessionStart } from "./hooks.ts";
-import { apiKey } from "./config.ts";
+import { apiKey, setProjectRoot } from "./config.ts";
 
 async function hook(event: string) {
   if (process.env.MD_SCRUB_INNER) return; // our own Haiku call; never recurse
@@ -15,6 +15,7 @@ async function hook(event: string) {
     process.stdout.write(JSON.stringify({ systemMessage: `md-scrub: couldn't read the hook input, so this ${event} wasn't checked.` }) + "\n");
     return;
   }
+  setProjectRoot(input.cwd);
   const out =
     event === "pre" ? await pre(input)
     : event === "post" ? post(input)

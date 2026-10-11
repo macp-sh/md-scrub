@@ -1,18 +1,18 @@
 import { test, expect, mock } from 'claude-code/testing'
 import { outcomeLine, progressLine } from '../hooks/status'
 
-const STATE = '/home/test/.local/state/md-scrub'
+const STATE = '/home/test/.claude/md-scrub/state'
 
 test('lines appear only when md-scrub acted', () => {
   const base = { id: 'x', file: '/p/DEPS.md', phase: 'done', startedAt: 0 }
-  expect(outcomeLine({ ...base, outcome: 'cleaned', edits: 2 })).toBe('cleaned DEPS.md (2 edits)')
-  expect(outcomeLine({ ...base, outcome: 'blocked', reason: 'LICENSE: licence file' })).toBe('blocked LICENSE: licence file')
-  expect(outcomeLine({ ...base, file: '3 changed files', outcome: 'moved' })).toBe('moved 3 changed files to the scratchpad')
+  expect(outcomeLine({ ...base, outcome: 'scrubbed', edits: 2 })).toBe('scrubbed DEPS.md (2 edits)')
+  expect(outcomeLine({ ...base, file: '/p/terms.md', outcome: 'flagged', reason: 'mostly third-party legal terms' })).toBe('flagged terms.md (mostly third-party legal terms)')
+  expect(outcomeLine({ ...base, outcome: 'unchecked' })).toBe("not checked DEPS.md (OpenRouter isn't responding)")
   expect(outcomeLine({ ...base, outcome: 'clean' })).toBeUndefined()
   expect(outcomeLine({ ...base, outcome: 'clean' })).toBeUndefined()
   expect(progressLine({ ...base, phase: 'Jev 1/2' })).toBeUndefined()
   expect(progressLine({ ...base, phase: 'sweeping 1/3: a.md' })).toBeUndefined()
-  expect(progressLine({ ...base, phase: 'cleaning 1 section' })).toBe('cleaning DEPS.md…')
+  expect(progressLine({ ...base, phase: 'scrubbing 1 section' })).toBe('scrubbing DEPS.md…')
 })
 
 test('stays hidden while checking, shows the clean-up and outcome, then clears', async ($, on) => {
@@ -37,9 +37,9 @@ test('stays hidden while checking, shows the clean-up and outcome, then clears',
     const record = { id: e.tool_use_id, file: '/p/DEPS.md', phase: 'Jev 1/2', startedAt: clock.now() }
     files.set(call, JSON.stringify(record))
     await new Promise<void>(resolve => (release = resolve))
-    files.set(call, JSON.stringify({ ...record, phase: 'cleaning 1 section' }))
+    files.set(call, JSON.stringify({ ...record, phase: 'scrubbing 1 section' }))
     await new Promise<void>(resolve => (release = resolve))
-    const done = { ...record, phase: 'done', outcome: 'cleaned', edits: 2 }
+    const done = { ...record, phase: 'done', outcome: 'scrubbed', edits: 2 }
     files.set(call, JSON.stringify(done))
     return {}
   })
@@ -54,12 +54,12 @@ test('stays hidden while checking, shows the clean-up and outcome, then clears',
 
   release()
   await clock.advance(500)
-  expect(statuses.at(-1)).toBe('cleaning DEPS.md…')
+  expect(statuses.at(-1)).toBe('scrubbing DEPS.md…')
 
   release()
   await call
   await clock.advance(0)
-  expect(statuses.at(-1)).toBe('cleaned DEPS.md (2 edits)')
+  expect(statuses.at(-1)).toBe('scrubbed DEPS.md (2 edits)')
 
   await clock.advance(6000)
   expect(statuses.at(-1)).toBeUndefined()
@@ -116,7 +116,7 @@ test('keeps a setup problem on the line, under any outcome, until a later check 
   })
   on('classic.PreToolUse', (_$, e) => {
     files.set(`${STATE}/calls/${e.tool_use_id.replace(/[^\w-]/g, '')}.json`,
-      JSON.stringify({ id: e.tool_use_id, file: '/p/DEPS.md', phase: 'done', startedAt: clock.now(), outcome: 'cleaned', edits: 1 }))
+      JSON.stringify({ id: e.tool_use_id, file: '/p/DEPS.md', phase: 'done', startedAt: clock.now(), outcome: 'scrubbed', edits: 1 }))
     return {}
   })
   on('tool.call', () => ({ result: 'wrote DEPS.md' }))
@@ -126,7 +126,7 @@ test('keeps a setup problem on the line, under any outcome, until a later check 
 
   await $.tool.call({ tool: 'Write', file_path: '/p/DEPS.md', content: 'x' })
   await clock.advance(0)
-  expect(statuses.at(-1)).toBe('cleaned DEPS.md (1 edit)')
+  expect(statuses.at(-1)).toBe('scrubbed DEPS.md (1 edit)')
   await clock.advance(6000)
   expect(statuses.at(-1)).toBe(line)
 
