@@ -130,7 +130,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
 
     expect((await ui.find({ text: /^md-scrub$/ })) ?? (await ui.find({ text: 'md-scrub' }))).toBeDefined()
-    expect(await ui.find({ text: 'third-party legal terms' })).toBeDefined()
+    expect(await ui.find({ text: 'Third-party legal terms' })).toBeDefined()
     expect(await ui.find({ text: 'acme-app' })).toBeDefined()
 
     // Not set for the user: pressing sets it on.

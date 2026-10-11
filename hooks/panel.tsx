@@ -263,6 +263,9 @@ async function copyTopic($: EngineInterface, t: Topic) {
 // ---------- drawing ----------
 
 const Glyph = { on: '●', off: '○', unset: '·' }
+// Rows the body keeps even when its list is short, so the description sits at the bottom.
+const BODY_ROWS = 12
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const glyph = (v: boolean | undefined) => (v === undefined ? Glyph.unset : v ? Glyph.on : Glyph.off)
 
 // status.ts's session.start hook registers the /md-scrub command (a module takes one unmatched hook per
@@ -307,7 +310,7 @@ export function registerPanel(on: On) {
         {(['topics', 'exclusions', 'log'] as const).map((t, i) => (
           <Button key={`tab:${t}`} plain hotkey={String(i + 1)} dimColor={t !== tab}
             onPress={() => { tab = t; adding = undefined; choice = undefined; $.ui.invalidate('ui.render') }}>
-            {t === 'topics' ? 'Topics' : t === 'exclusions' ? 'Exclusions' : 'Log'}
+            <Text bold={t === tab} underline={t === tab}>{t === 'topics' ? 'Topics' : t === 'exclusions' ? 'Exclusions' : 'Log'}</Text>
           </Button>
         ))}
       </Box>
@@ -325,14 +328,14 @@ export function registerPanel(on: On) {
     if (tab === 'topics') {
       const sel = selectedTopic(data)
       body = (
-        <Box flexDirection="column">
+        <Box flexDirection="column" flexGrow={1}>
           {columns}
           {data.topics.map(t => {
             const active = !t.error && effective(t, data.settings)
             return (
               <Box key={`row:${t.id}`} flexDirection="row">
                 <Box width={nameWidth}>
-                  <Text dimColor={!active} wrap="truncate">{t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>} {t.name}</Text>
+                  <Text dimColor={!active} wrap="truncate">{t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>} {sentence(t.name)}</Text>
                 </Box>
                 {SCOPES.map(s => (
                   <Box width={s === 'user' ? 9 : Math.max(9, p.projectName.length + 2)} justifyContent="center">
@@ -344,11 +347,10 @@ export function registerPanel(on: On) {
               </Box>
             )
           })}
+          <Box flexGrow={1} />
           <Box flexDirection="column" marginTop={1}>
-            {sel?.error ? <Text color="error">{sel.error}</Text> : <Text dimColor>{sel?.description}</Text>}
-            {sel && !sel.error ? (
-              <Text color="subtle">{sel.file ? tilde(sel.file, p.home) : 'built into md-scrub · c copies it to your topics to edit'}</Text>
-            ) : null}
+            {sel?.error ? <Text color="error" wrap="truncate-end">{sel.error}</Text> : <Text dimColor wrap="truncate-end">{sel?.description}</Text>}
+            {sel && !sel.error ? <Text color="subtle" wrap="truncate-middle">{sel.file ? tilde(sel.file, p.home) : 'built into md-scrub'}</Text> : null}
           </Box>
         </Box>
       )
@@ -439,8 +441,8 @@ export function registerPanel(on: On) {
     const sel = selectedTopic(data)
     const actions = (
       <Box flexDirection="row" gap={2} marginTop={1}>
-        {foot.includes('o') ? <Button key="open" plain hotkey="o" dimColor onPress={() => { if (sel?.file) void openFile($, sel.file) }}>open</Button> : null}
-        {foot.includes('c') ? <Button key="copy" plain hotkey="c" dimColor onPress={() => { if (sel) void copyTopic($, sel) }}>copy to edit</Button> : null}
+        {foot.includes('o') && sel?.file ? <Button key="open" plain hotkey="o" dimColor onPress={() => { if (sel?.file) void openFile($, sel.file) }}>open</Button> : null}
+        {foot.includes('c') && sel?.builtIn && !sel.file ? <Button key="copy" plain hotkey="c" dimColor onPress={() => { if (sel) void copyTopic($, sel) }}>copy to edit</Button> : null}
         {foot.includes('a') ? <Button key="addx" plain hotkey="a" dimColor
           onPress={async () => { adding = { query: '', target: 'project', suggestions: cache ? await suggest($, cache.p.root, '') : [] }; $.ui.invalidate('ui.render') }}>add</Button> : null}
         {foot.includes('e') ? <Button key="exclude" plain hotkey="e" dimColor
@@ -452,7 +454,7 @@ export function registerPanel(on: On) {
             choice = { row: i, options: [file, parent(file)].filter((x): x is string => !!x) }
             $.ui.invalidate('ui.render')
           }}>exclude</Button> : null}
-        <Text dimColor>· enter switches · esc closes</Text>
+        <Text dimColor>enter: switch   esc: close</Text>
       </Box>
     )
 
@@ -460,7 +462,7 @@ export function registerPanel(on: On) {
       <Box flexDirection="column" width={width}>
         {head}
         {tabs}
-        <Box flexDirection="column" marginTop={1}>{body}</Box>
+        <Box flexDirection="column" marginTop={1} minHeight={BODY_ROWS}>{body}</Box>
         {actions}
       </Box>
     )
