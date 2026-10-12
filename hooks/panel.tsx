@@ -1,4 +1,4 @@
-import type { EngineInterface, On, Register } from 'claude-code'
+import type { EngineInterface, On, Register, RenderChildren, RenderElement } from 'claude-code'
 
 // The /md-scrub panel: whether md-scrub is working (header), what it looks for (Topics), where it
 // doesn't look (Exclusions) and what it did (Log). Settings are plain files, read and written here:
@@ -203,11 +203,18 @@ let focused: string | undefined
 let adding: { query: string; target: Scope; suggestions: string[] } | undefined
 let choice: { row: number; options: string[] } | undefined
 let cache: { p: Paths; data: Data } | undefined
+// A problem with the last action. Shown in the panel, since the pane holds toasts while it's open.
+let message: string | undefined
 
 // Every draw reads the files afresh (they're small), so edits made elsewhere show too; actions
 // use what the last draw read.
 function refresh($: EngineInterface) {
   $.ui.invalidate('ui.render')
+}
+
+function say($: EngineInterface, text: string) {
+  message = text
+  refresh($)
 }
 
 async function suggest($: EngineInterface, root: string, query: string): Promise<string[]> {
@@ -231,12 +238,13 @@ const selectedTopic = (d: Data) => {
 
 async function setTopic($: EngineInterface, id: string, scope: Scope) {
   if (!cache) return
+  message = undefined
   const { p, data } = cache
   const path = `${scope === 'user' ? p.user : p.project}/config.json`
   const text = await readText($, path)
   let config: Record<string, unknown>
   try { config = text.trim() ? parseJson(text) : {} } catch {
-    $.ui.toast(`md-scrub: ${tilde(path, p.home)} isn't valid JSON; fix it first`)
+    say($, `${tilde(path, p.home)} isn't valid JSON; fix it first.`)
     return
   }
   await $.fs.write(path, withTopicSetting(config, id, cycle(topicSetting(data.settings[scope], id))))
@@ -245,6 +253,7 @@ async function setTopic($: EngineInterface, id: string, scope: Scope) {
 
 async function setPattern($: EngineInterface, pattern: string, scope: Scope, present: boolean) {
   if (!cache || !pattern) return
+  message = undefined
   const path = `${scope === 'user' ? cache.p.user : cache.p.project}/exclusions`
   await $.fs.write(path, withPattern(await readText($, path), pattern, present))
   refresh($)
@@ -252,7 +261,7 @@ async function setPattern($: EngineInterface, pattern: string, scope: Scope, pre
 
 async function openFile($: EngineInterface, path: string) {
   try { await $.process.run(['open', path]) } catch {
-    await $.process.run(['xdg-open', path]).catch(() => $.ui.toast(`md-scrub: open ${path} yourself`))
+    await $.process.run(['xdg-open', path]).catch(() => say($, `Couldn't open ${path}; open it yourself.`))
   }
 }
 
@@ -273,16 +282,24 @@ const BODY_ROWS = 8
 // error, warning).
 const ORANGE = '#d97757'
 const SELECTED = '#3a3835'
+const TABS = [['topics', 'Topics'], ['exclusions', 'Exclusions'], ['log', 'Log']] as const
+const TAB_GAP = 3
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const glyph = (v: boolean | undefined) => (v === undefined ? Glyph.unset : v ? Glyph.on : Glyph.off)
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+// The row the focus is on, from the key of the Button holding it.
+const focusedPattern = () => (focused?.startsWith('x:') ? focused.slice(2, focused.lastIndexOf(':')) : undefined)
+const focusedLog = () => (focused?.startsWith('l:') ? Number(focused.slice(2)) : focused?.startsWith('e:') ? choice?.row : undefined)
 
 // status.ts's session.start hook registers the /md-scrub command (a module takes one unmatched hook per
 // event, and $ can't be passed across files); `register` below does it when this module loads alone.
 export function registerPanel(on: On) {
 
   on('command.run', { command: 'md-scrub' }, async $ => {
-    tab = 'topics'; adding = undefined; choice = undefined; focused = undefined
-    await $.ui.open({ id: PANE, title: 'md-scrub', focus: true, closeOnEscape: true })
+    tab = 'topics'; adding = undefined; choice = undefined; focused = undefined; message = undefined
+    // Opened as a dialog: the arrows walk its buttons (otherwise they scroll) and Esc closes it.
+    await $.ui.open({ id: PANE, title: 'md-scrub', focus: true, closeOnEscape: true, holdToasts: true })
     return {}
   })
 
@@ -305,6 +322,9 @@ export function registerPanel(on: On) {
     // The scope columns start just after the longest name.
     const longest = Math.max(12, ...data.topics.map(t => t.name.length), ...data.exclusions.user.map(x => x.length), ...data.exclusions.project.map(x => x.length))
     const nameWidth = Math.min(longest + 5, 44, width - 22)
+    const scopeWidth = (s: Scope) => (s === 'user' ? 9 : Math.max(9, p.projectName.length + 2))
+    const rule = <Text dimColor>{'─'.repeat(width)}</Text>
+    const broken = data.topics.filter(t => t.error).length
 
     const head = (
       <Box flexDirection="row">
@@ -313,49 +333,66 @@ export function registerPanel(on: On) {
         <Text color={hd.state === 'on' ? 'success' : hd.state === 'paused' ? 'warning' : 'error'}>{hd.state}</Text>
         {hd.reason ? <Text dimColor> · {hd.reason}</Text> : null}
         {hd.warning ? <Text color="warning"> · {hd.warning}</Text> : null}
+        {!hd.warning && hd.state !== 'off' && broken ? <Text color="error"> · {plural(broken, 'topic has an error', 'topics have errors')}</Text> : null}
       </Box>
     )
+    // Each tab is drawn `1: Topics`; the bar beneath the current one spans the same cells.
+    const tabWidth = (label: string) => label.length + 3
     const tabs = (
-      <Box flexDirection="row" gap={3} marginTop={1}>
-        {(['topics', 'exclusions', 'log'] as const).map((t, i) => (
-          <Button key={`tab:${t}`} plain hotkey={String(i + 1)} dimColor={t !== tab}
-            onPress={() => { tab = t; adding = undefined; choice = undefined; $.ui.invalidate('ui.render') }}>
-            <Text bold={t === tab} underline={t === tab}>{t === 'topics' ? 'Topics' : t === 'exclusions' ? 'Exclusions' : 'Log'}</Text>
-          </Button>
-        ))}
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" gap={TAB_GAP}>
+          {TABS.map(([t, label], i) => (
+            <Box width={tabWidth(label)}>
+              <Button key={`tab:${t}`} plain hotkey={String(i + 1)} dimColor={t !== tab}
+                onPress={() => { tab = t; adding = undefined; choice = undefined; message = undefined; $.ui.invalidate('ui.render') }}>
+                <Text bold={t === tab}>{label}</Text>
+              </Button>
+            </Box>
+          ))}
+        </Box>
+        <Box flexDirection="row" gap={TAB_GAP}>
+          {TABS.map(([t, label]) => (
+            <Box width={tabWidth(label)}><Text color={ORANGE}>{t === tab ? '━'.repeat(tabWidth(label)) : ' '}</Text></Box>
+          ))}
+        </Box>
       </Box>
     )
     const columns = (
       <Box flexDirection="row">
         <Box width={nameWidth}><Text> </Text></Box>
-        <Box width={9} justifyContent="center"><Text dimColor>User</Text></Box>
-        <Box width={Math.max(9, p.projectName.length + 2)} justifyContent="center"><Text dimColor>{p.projectName}</Text></Box>
+        <Box width={scopeWidth('user')} justifyContent="center"><Text dimColor>User</Text></Box>
+        <Box width={scopeWidth('project')} justifyContent="center"><Text dimColor>{p.projectName}</Text></Box>
       </Box>
+    )
+    // A list row: highlighted while the focus is in it, and under the pointer.
+    const row = (key: string, selected: boolean, children: RenderChildren) => (
+      <Box key={key} flexDirection="row" backgroundColor={selected ? SELECTED : undefined} hover={{ backgroundColor: SELECTED }}>{children}</Box>
     )
 
     let body
-    let foot: string[] = []
+    // The key legend: what the arrows and Enter do here, then this tab's own keys as buttons.
+    let enter = ''
+    const actions: RenderElement[] = []
     if (tab === 'topics') {
       const sel = selectedTopic(data)
       body = (
         <Box flexDirection="column" flexGrow={1}>
           {columns}
-          {data.topics.map(t => {
+          {data.topics.map((t, i) => {
             const active = !t.error && effective(t, data.settings)
-            return (
-              <Box key={`row:${t.id}`} flexDirection="row" backgroundColor={sel?.id === t.id ? SELECTED : undefined}>
-                <Box width={nameWidth}>
-                  <Text dimColor={!active} wrap="truncate">{t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>} {sentence(t.name)}</Text>
-                </Box>
-                {SCOPES.map(s => (
-                  <Box width={s === 'user' ? 9 : Math.max(9, p.projectName.length + 2)} justifyContent="center">
-                    <Button key={`t:${t.id}:${s}`} plain dimColor={topicSetting(data.settings[s], t.id) === undefined}
-                      label={glyph(topicSetting(data.settings[s], t.id))}
-                      onPress={() => { if (!t.error) void setTopic($, t.id, s) }} />
-                  </Box>
-                ))}
+            return row(`row:${t.id}`, sel?.id === t.id, <Box flexDirection="row">
+              <Box width={nameWidth}>
+                <Text dimColor={!active} bold={active} wrap="truncate">{t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>} {sentence(t.name)}</Text>
               </Box>
-            )
+              {SCOPES.map(s => (
+                <Box width={scopeWidth(s)} justifyContent="center">
+                  <Button key={`t:${t.id}:${s}`} plain dimColor={topicSetting(data.settings[s], t.id) === undefined}
+                    autoFocus={i === 0 && s === 'project' ? true : undefined}
+                    label={glyph(topicSetting(data.settings[s], t.id))}
+                    onPress={() => { if (!t.error) void setTopic($, t.id, s) }} />
+                </Box>
+              ))}
+            </Box>)
           })}
           <Box flexGrow={1} />
           <Box flexDirection="column" marginTop={1}>
@@ -364,27 +401,34 @@ export function registerPanel(on: On) {
           </Box>
         </Box>
       )
-      foot = ['o', 'c']
+      enter = 'on/off/not set'
+      if (sel?.file) actions.push(<Button key="open" plain hotkey="o" dimColor onPress={() => { if (sel?.file) void openFile($, sel.file) }}>open</Button>)
+      if (sel?.builtIn && !sel.file) actions.push(<Button key="copy" plain hotkey="c" dimColor onPress={() => { if (sel) void copyTopic($, sel) }}>copy to edit</Button>)
     } else if (tab === 'exclusions') {
       const all = [...new Set([...data.exclusions.user, ...data.exclusions.project])]
+      const current = focusedPattern()
+      const add = (pattern: string, target: Scope) => {
+        adding = undefined
+        if (!pattern) return refresh($)
+        // The new row, focused, shows it was added.
+        void setPattern($, pattern, target, true).then(() => $.ui.focus({ requestId: PANE, key: `x:${pattern}:${target}` })).catch(() => {})
+      }
       body = (
         <Box flexDirection="column">
           {columns}
           {all.length === 0 && !adding ? <Text dimColor>No exclusions.</Text> : null}
-          {all.map(x => (
-            <Box key={`xrow:${x}`} flexDirection="row">
-              <Box width={nameWidth}><Text wrap="truncate">{x}</Text></Box>
-              {SCOPES.map(s => {
-                const present = data.exclusions[s].includes(x)
-                return (
-                  <Box width={s === 'user' ? 9 : Math.max(9, p.projectName.length + 2)} justifyContent="center">
-                    <Button key={`x:${x}:${s}`} plain dimColor={!present} label={present ? Glyph.on : Glyph.unset}
-                      onPress={() => void setPattern($, x, s, !present)} />
-                  </Box>
-                )
-              })}
-            </Box>
-          ))}
+          {all.map(x => row(`xrow:${x}`, !adding && current === x, <Box flexDirection="row">
+            <Box width={nameWidth}><Text wrap="truncate">{x}</Text></Box>
+            {SCOPES.map(s => {
+              const present = data.exclusions[s].includes(x)
+              return (
+                <Box width={scopeWidth(s)} justifyContent="center">
+                  <Button key={`x:${x}:${s}`} plain dimColor={!present} label={present ? Glyph.on : Glyph.unset}
+                    onPress={() => void setPattern($, x, s, !present)} />
+                </Box>
+              )
+            })}
+          </Box>))}
           {adding && Input ? (
             <Box flexDirection="column" marginTop={1}>
               <Box flexDirection="row" gap={2}>
@@ -395,27 +439,38 @@ export function registerPanel(on: On) {
                     adding.suggestions = await suggest($, cache.p.root, value)
                     $.ui.invalidate('ui.render')
                   }}
-                  onSubmit={(value: string) => {
-                    const target = adding?.target ?? 'project'
-                    adding = undefined
-                    void setPattern($, value.trim(), target, true)
-                  }} />
+                  onSubmit={(value: string) => add(value.trim(), adding?.target ?? 'project')} />
                 <Button key="target" plain dimColor
                   onPress={() => { if (adding) { adding.target = adding.target === 'project' ? 'user' : 'project'; $.ui.invalidate('ui.render') } }}>
-                  for {adding.target === 'project' ? p.projectName : 'User'}
+                  <Text dimColor>adds to </Text><Text color={ORANGE}>{adding.target === 'project' ? p.projectName : 'User'}</Text>
                 </Button>
               </Box>
               {adding.suggestions.map(s => (
-                <Button key={`s:${s}`} plain dimColor onPress={() => { const target = adding?.target ?? 'project'; adding = undefined; void setPattern($, s, target, true) }}>
+                <Button key={`s:${s}`} plain dimColor onPress={() => add(s, adding?.target ?? 'project')}>
                   {'  ' + s}
                 </Button>
               ))}
+              <Text dimColor>folder/ = everything in it · * = any name</Text>
             </Box>
-          ) : null}
+          ) : (
+            <Box marginTop={1}>
+              <Button key="addx" plain hotkey="a" dimColor
+                onPress={async () => { message = undefined; adding = { query: '', target: 'project', suggestions: cache ? await suggest($, cache.p.root, '') : [] }; $.ui.invalidate('ui.render') }}>add an exclusion</Button>
+            </Box>
+          )}
         </Box>
       )
-      foot = ['a']
+      enter = adding ? 'add' : 'exclude/not'
     } else {
+      const current = focusedLog()
+      const pick = (i: number) => {
+        const r = data.log[i]
+        if (!r) return
+        const file = relative(r.file ?? '', p.root)
+        message = undefined
+        choice = { row: i, options: [file, parent(file)].filter((x): x is string => !!x) }
+        $.ui.invalidate('ui.render')
+      }
       body = (
         <Box flexDirection="column">
           {data.logError ? <Text dimColor>{data.logError}</Text> : null}
@@ -427,17 +482,23 @@ export function registerPanel(on: On) {
             const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
             const colour = r.action === 'scrubbed' ? ORANGE : r.action === 'flagged' || r.action === 'unchecked' ? 'warning' : undefined
             return (
-              <Box key={`lrow:${i}`} flexDirection="column">
-                <Button key={`l:${i}`} plain onPress={() => { choice = { row: i, options: [file, parent(file)].filter((x): x is string => !!x) }; $.ui.invalidate('ui.render') }}>
-                  <Text dimColor>{time}  </Text><Text color={colour}>{(r.action ?? '').padEnd(10)}</Text><Text dimColor>{folderOf(tilde(file, p.home))}</Text>{nameOf(file)}{excluded ? <Text dimColor> · excluded</Text> : null}
-                </Button>
+              <Box flexDirection="column">
+                {row(`lrow:${i}`, current === i, <Box flexDirection="row">
+                  <Box width={7}><Text dimColor>{time}</Text></Box>
+                  <Box width={11}><Text color={colour}>{r.action ?? ''}</Text></Box>
+                  <Button key={`l:${i}`} plain onPress={() => pick(i)}>
+                    <Text dimColor>{folderOf(tilde(file, p.home))}</Text>{nameOf(file)}
+                  </Button>
+                  {excluded ? <Text dimColor> · excluded</Text> : null}
+                </Box>)}
                 {choice?.row === i ? (
-                  <Box flexDirection="row" gap={2} marginLeft={8}>
+                  <Box flexDirection="row" gap={1} marginLeft={18}>
                     <Text dimColor>Exclude for {p.projectName}:</Text>
                     {choice.options.map((o, k) => (
                       <Button key={`e:${k}`} plain autoFocus={k === choice!.options.length - 1 ? true : undefined}
                         onPress={() => { choice = undefined; void setPattern($, o, 'project', true) }}>{o}</Button>
                     ))}
+                    <Text dimColor>· enter</Text>
                   </Box>
                 ) : null}
               </Box>
@@ -445,41 +506,33 @@ export function registerPanel(on: On) {
           })}
         </Box>
       )
-      foot = ['e']
+      enter = 'exclude'
+      actions.push(<Button key="exclude" plain hotkey="e" dimColor onPress={() => pick(focusedLog() ?? 0)}>exclude</Button>)
     }
 
-    const sel = selectedTopic(data)
-    const actions = (
-      <Box flexDirection="row" gap={2} marginTop={1}>
-        {foot.includes('o') && sel?.file ? <Button key="open" plain hotkey="o" dimColor onPress={() => { if (sel?.file) void openFile($, sel.file) }}>open</Button> : null}
-        {foot.includes('c') && sel?.builtIn && !sel.file ? <Button key="copy" plain hotkey="c" dimColor onPress={() => { if (sel) void copyTopic($, sel) }}>copy to edit</Button> : null}
-        {foot.includes('a') ? <Button key="addx" plain hotkey="a" dimColor
-          onPress={async () => { adding = { query: '', target: 'project', suggestions: cache ? await suggest($, cache.p.root, '') : [] }; $.ui.invalidate('ui.render') }}>add</Button> : null}
-        {foot.includes('e') ? <Button key="exclude" plain hotkey="e" dimColor
-          onPress={() => {
-            const i = focused?.startsWith('l:') ? Number(focused.slice(2)) : 0
-            const r = data.log[i]
-            if (!r) return
-            const file = relative(r.file ?? '', p.root)
-            choice = { row: i, options: [file, parent(file)].filter((x): x is string => !!x) }
-            $.ui.invalidate('ui.render')
-          }}>exclude</Button> : null}
-        <Text dimColor>{tab === 'log' ? 'enter: exclude' : 'enter: switch'}   esc: close</Text>
+    const hint = (k: string, d: string) => <Text>{k}<Text dimColor> {d}</Text></Text>
+    const legend = [hint('↑↓', 'move'), hint('enter', enter), ...actions, hint('1-3', 'screen'), hint('esc', 'close')]
+    const keys = (
+      <Box flexDirection="row" flexWrap="wrap">
+        {legend.flatMap((item, i) => (i ? [<Text dimColor> · </Text>, item] : [item]))}
       </Box>
     )
 
     return (
       <Box flexDirection="column" width={width}>
         {head}
+        {rule}
         {tabs}
         <Box flexDirection="column" marginTop={1} minHeight={BODY_ROWS}>{body}</Box>
-        {actions}
+        {message ? <Text color="error">{message}</Text> : null}
+        <Box marginTop={1}>{rule}</Box>
+        {keys}
       </Box>
     )
   })
 
   on('ui.close', { id: PANE }, async ($, e, next) => {
-    adding = undefined; choice = undefined; cache = undefined
+    adding = undefined; choice = undefined; cache = undefined; message = undefined
     return next(e)
   }).catch(($, e, next) => next(e))
 }

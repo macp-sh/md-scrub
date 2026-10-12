@@ -181,6 +181,44 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(writes.get(`${PROJECT}/exclusions`)).toBe('docs/\n')
     expect(await ui.find({ text: /excluded/ })).toBeDefined()
   })
+
+  test(`${surface}: the header counts topic errors and the legend says what enter does`, async ($, on) => {
+    const files = project({ [`${PROJECT}/topics/customer-names.json`]: '{ not json' })
+    fakeFiles(on, files, new Map())
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    expect(await ui.find({ text: /1 topic has an error/ })).toBeDefined()
+    expect(await ui.find({ text: /on\/off\/not set/ })).toBeDefined()
+    await ui.press({ key: 'tab:exclusions' })
+    expect(await ui.find({ text: /exclude\/not/ })).toBeDefined()
+  })
+
+  test(`${surface}: a config file that isn't valid JSON is reported in the panel, not overwritten`, async ($, on) => {
+    const files = project({ [`${USER}/config.json`]: '{ broken' })
+    const writes = new Map<string, string>()
+    fakeFiles(on, files, writes)
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 't:third-party-terms:user' })
+    expect(writes.size).toBe(0)
+    expect(await ui.find({ text: /isn't valid JSON; fix it first/ })).toBeDefined()
+    // Moving to another screen clears it.
+    await ui.press({ key: 'tab:log' })
+    expect(await ui.find({ text: /isn't valid JSON/ })).toBeUndefined()
+  })
+
+  test(`${surface}: adding an exclusion shows the pattern hint and where it goes`, async ($, on) => {
+    const writes = new Map<string, string>()
+    fakeFiles(on, project(), writes)
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'tab:exclusions' })
+    expect(await ui.find({ text: /folder\/ = everything in it/ })).toBeUndefined()
+    await ui.press({ key: 'addx' })
+    expect(await ui.find({ text: /folder\/ = everything in it/ })).toBeDefined()
+    expect(await ui.find({ text: 'acme-app' })).toBeDefined()
+    await ui.press({ key: 'target' })
+    await ui.input({ key: 'add', text: 'notes/' })
+    expect(writes.get(`${USER}/exclusions`)).toBe('notes/\n')
+    expect(writes.has(`${PROJECT}/exclusions`)).toBe(false)
+  })
 }
 
 test('the log collapses the same action on the same file within a minute', () => {
