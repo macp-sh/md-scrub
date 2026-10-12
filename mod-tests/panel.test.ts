@@ -1,8 +1,8 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
-  withTopicSetting, topicSetting, cycle, effective, patterns, withPattern, logActions, isPaused, header, isExcluded,
-  projectLog, logDetail,
+  withTopicSetting, topicSetting, effective, patterns, withPattern, logActions, isPaused, header, isExcluded,
+  projectLog, logDetail, inherited, shown, flipped,
 } from '../hooks/panel'
 
 const HOME = '/home/test'
@@ -13,11 +13,10 @@ const STATE = `${USER}/state`
 
 // ---------- pure helpers ----------
 
-test('topic settings are written, cycled and removed cleanly', () => {
+test('topic settings are written and removed cleanly', () => {
   const on = withTopicSetting({ thresholds: { flag: 0.4 } }, 'credentials', true)
   expect(JSON.parse(on)).toEqual({ thresholds: { flag: 0.4 }, topics: { credentials: { enabled: true } } })
   expect(JSON.parse(withTopicSetting(JSON.parse(on), 'credentials', undefined))).toEqual({ thresholds: { flag: 0.4 } })
-  expect([cycle(undefined), cycle(true), cycle(false)]).toEqual([true, false, undefined])
   expect(topicSetting({ topics: { a: { enabled: false } } }, 'a')).toBe(false)
   expect(topicSetting({}, 'a')).toBeUndefined()
 })
@@ -75,6 +74,31 @@ test('a log row says what happened in one line', () => {
   expect(logDetail({ t: '', event: 'action', action: 'flagged', topics: ['terms'], reason: 'clean-up failed' }, name))
     .toBe('Third-party legal terms; the clean-up failed, so it was saved as written')
   expect(logDetail({ t: '', event: 'action', action: 'unchecked', reason: 'timeout' }, name)).toBe('Not checked: timeout')
+})
+
+test('a scope that does not set a topic follows the next one down', () => {
+  const t = { id: 'x', name: 'x', description: '', builtIn: true, def: true }
+  expect(inherited(t, { user: {}, project: {} }, 'user')).toBe(true)
+  expect(inherited(t, { user: {}, project: {} }, 'project')).toBe(true)
+  expect(inherited(t, { user: { topics: { x: { enabled: false } } }, project: {} }, 'project')).toBe(false)
+  // The user follows only the default, whatever the project says.
+  expect(inherited(t, { user: {}, project: { topics: { x: { enabled: false } } } }, 'user')).toBe(true)
+})
+
+test('a cell shows its setting or what it inherits, and a press saves only a difference', () => {
+  const t = { id: 'x', name: 'x', description: '', builtIn: true, def: true }
+  const none = { user: {}, project: {} }
+  const userOff = { user: { topics: { x: { enabled: false } } }, project: {} }
+  expect(shown(t, none, 'project')).toBe(true)
+  expect(shown(t, userOff, 'project')).toBe(false)
+  // Turning the user off differs from the default, so it is saved.
+  expect(flipped(t, none, 'user')).toBe(false)
+  // Turning the user back on matches the default, so the setting goes.
+  expect(flipped(t, userOff, 'user')).toBeUndefined()
+  // The project differs from the user only while it is set against it.
+  expect(flipped(t, none, 'project')).toBe(false)
+  expect(flipped(t, { ...none, project: { topics: { x: { enabled: false } } } }, 'project')).toBeUndefined()
+  expect(flipped(t, userOff, 'project')).toBe(true)
 })
 
 test('paused only while the latest Jev or action entry is a recent unchecked write', () => {
@@ -155,7 +179,7 @@ function project(extra: Record<string, string> = {}) {
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: topics show the result here, and a cell cycles that scope's config.json`, async ($, on) => {
+  test(`${surface}: topics show the result here, and a cell toggles that scope's config.json`, async ($, on) => {
     const files = project()
     const writes = new Map<string, string>()
     fakeFiles(on, files, writes)
@@ -165,13 +189,17 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: 'Third-party legal terms' })).toBeDefined()
     expect(await ui.find({ text: 'acme-app' })).toBeDefined()
     expect(await ui.find({ text: 'v9.8.7' })).toBeDefined()
+    // Not set for the user: it shows the default it inherits (on); the project is set off.
+    expect((await ui.find({ key: 'user@t:third-party-terms' }))?.text).toBe('●')
+    expect((await ui.find({ key: 'project@t:third-party-terms' }))?.text).toBe('○')
 
-    // Not set for the user: its cell sets it on.
-    await ui.press({ key: 'user@t:third-party-terms' })
-    expect(JSON.parse(writes.get(`${USER}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: true } } })
-    // Off for the project: its cell clears it, removing the key.
+    // On for the project matches the user it inherits from, so the project's setting goes.
     await ui.press({ key: 'project@t:third-party-terms' })
     expect(JSON.parse(writes.get(`${PROJECT}/config.json`)!)).toEqual({})
+    // Off for the user differs from the default, so it is saved, and the project follows it.
+    await ui.press({ key: 'user@t:third-party-terms' })
+    expect(JSON.parse(writes.get(`${USER}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: false } } })
+    expect((await ui.find({ key: 'project@t:third-party-terms' }))?.text).toBe('○')
   })
 
   test(`${surface}: the header says why md-scrub is off`, async ($, on) => {
@@ -221,12 +249,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     fakeFiles(on, files, new Map())
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     expect(await ui.find({ text: /1 topic has an error/ })).toBeDefined()
-    expect(await ui.find({ text: /cycle/ })).toBeDefined()
+    expect(await ui.find({ text: /toggle/ })).toBeDefined()
     // The cells are the stops, so there is no separate key for the User column.
     expect(await ui.find({ key: 'user' })).toBeUndefined()
     await ui.press({ key: 'tab:exclusions' })
     expect(await ui.find({ text: /path exclusion/ })).toBeDefined()
-    expect(await ui.find({ text: /cycle/ })).toBeUndefined()
+    expect(await ui.find({ text: /toggle/ })).toBeUndefined()
   })
 
   test(`${surface}: a config file that isn't valid JSON is reported in the panel, not overwritten`, async ($, on) => {
@@ -248,9 +276,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     fakeFiles(on, files, writes)
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     await ui.press({ key: 'user@t:third-party-terms' })
-    expect(JSON.parse(writes.get(`${USER}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: true } } })
+    expect(JSON.parse(writes.get(`${USER}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: false } } })
     await ui.press({ key: 'project@t:third-party-terms' })
-    expect(JSON.parse(writes.get(`${PROJECT}/config.json`)!)).toEqual({})
+    expect(JSON.parse(writes.get(`${PROJECT}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: true } } })
     await ui.press({ key: 'tab:exclusions' })
     await ui.press({ key: 'user@x:legal/' })
     expect(writes.get(`${USER}/exclusions`)).toBe('legal/\n')

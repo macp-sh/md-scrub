@@ -57,8 +57,20 @@ export function withTopicSetting(config: Record<string, unknown>, id: string, va
 export const effective = (t: Topic, s: Settings): boolean =>
   topicSetting(s.project, t.id) ?? topicSetting(s.user, t.id) ?? t.def
 
-/** The next value of a cell: not set, then on, then off. */
-export const cycle = (v: boolean | undefined): boolean | undefined => (v === undefined ? true : v ? false : undefined)
+/** What a scope follows while it doesn't set the topic: the project follows the user, then the
+ *  default; the user follows the default. */
+export const inherited = (t: Topic, s: Settings, scope: Scope): boolean =>
+  (scope === 'project' ? topicSetting(s.user, t.id) : undefined) ?? t.def
+
+/** What a cell shows: its scope's setting, else what it inherits. */
+export const shown = (t: Topic, s: Settings, scope: Scope): boolean => topicSetting(s[scope], t.id) ?? inherited(t, s, scope)
+
+/** The setting a cell's press saves: the opposite of what it shows, or none when that is what it
+ *  inherits anyway, so a scope keeps only what differs from the one beneath it. */
+export const flipped = (t: Topic, s: Settings, scope: Scope): boolean | undefined => {
+  const next = !shown(t, s, scope)
+  return next === inherited(t, s, scope) ? undefined : next
+}
 
 /** Patterns in an exclusions file: one per line, blank lines and # comments skipped. */
 export const patterns = (text: string): string[] =>
@@ -284,7 +296,9 @@ async function setTopic($: EngineInterface, id: string, scope: Scope) {
     say($, `${tilde(path, p.home)} isn't valid JSON; fix it first.`)
     return
   }
-  await $.fs.write(path, withTopicSetting(config, id, cycle(topicSetting(data.settings[scope], id))))
+  const t = data.topics.find(t => t.id === id)
+  if (!t) return
+  await $.fs.write(path, withTopicSetting(config, id, flipped(t, data.settings, scope)))
   refresh($)
 }
 
@@ -457,8 +471,8 @@ export function registerPanel(on: On) {
                 </Text>
               </Box>
               {SCOPES.map(s => {
-                const v = t.error ? undefined : topicSetting(data.settings[s], t.id)
-                return cell(`t:${t.id}`, s, glyph(v), v === undefined, () => { if (!t.error) void setTopic($, t.id, s) },
+                const v = t.error ? undefined : shown(t, data.settings, s)
+                return cell(`t:${t.id}`, s, glyph(v), false, () => { if (!t.error) void setTopic($, t.id, s) },
                   v ? 'success' : undefined, i === 0 && s === 'user' ? true : undefined)
               })}
             </Box>)
@@ -470,7 +484,7 @@ export function registerPanel(on: On) {
           </Box>
         </Box>
       )
-      enter = 'cycle'
+      enter = 'toggle'
       if (sel?.file) actions.push(<Button key="open" plain hotkey="o" dimColor onPress={() => { if (sel?.file) void openFile($, sel.file) }}>open</Button>)
       if (sel?.builtIn && !sel.file) actions.push(<Button key="copy" plain hotkey="c" dimColor onPress={() => { if (sel) void copyTopic($, sel) }}>copy to edit</Button>)
     } else if (tab === 'exclusions') {
