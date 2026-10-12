@@ -295,22 +295,38 @@ function say($: EngineInterface, text: string) {
 // Lists a folder's entries: `$.fs.list` in the panel, a stand-in in tests.
 type List = (dir: string) => Promise<readonly { name: string; kind: string }[]>
 
-async function suggest(list: List, root: string, query: string): Promise<string[]> {
-  const dir = query.includes('/') ? query.slice(0, query.lastIndexOf('/') + 1) : ''
-  const rest = query.slice(dir.length).toLowerCase()
-  const entries = await list(dir ? `${root}/${dir.slice(0, -1)}` : root).catch(() => [])
+// Paths that complete `query`, read from where it starts: your home folder (~/), the top of the disk
+// (/), or else the project root. They're shown as typed: ~/… and /… kept, project paths relative.
+async function suggest(list: List, root: string, query: string, home = ''): Promise<string[]> {
+  const [base, shown] = query.startsWith('~/') && home ? [home, '~/'] : query.startsWith('/') ? ['', '/'] : [root, '']
+  const typed = query.slice(shown.length)
+  const dir = typed.includes('/') ? typed.slice(0, typed.lastIndexOf('/') + 1) : ''
+  const rest = typed.slice(dir.length).toLowerCase()
+  const entries = await list(`${base}/${dir}`.replace(/\/+$/, '') || '/').catch(() => [])
   return entries
     // Folders of every kind, hidden ones included (as Claude Code's own @ list shows them), and Markdown
     // files: md-scrub checks nothing else, so another file is no use to exclude.
     .filter(e => !SKIP.has(e.name) && (e.kind === 'dir' || e.name.endsWith('.md')))
     .filter(e => e.name.toLowerCase().startsWith(rest))
-    .map(e => dir + e.name + (e.kind === 'dir' ? '/' : ''))
+    .map(e => shown + dir + e.name + (e.kind === 'dir' ? '/' : ''))
     .sort((a, b) => Number(b.endsWith('/')) - Number(a.endsWith('/')) || a.localeCompare(b))
     .slice(0, 8)
 }
 
 // Paths matching a path-exclusion field: up to five, folders first.
 const MATCHES = 5
+
+/** Where a typed path exclusion goes, and as what. A path from your home folder (~/…) or a full path
+ *  inside the project is made relative when it goes to the project, so the project's file works for
+ *  anyone who clones it. One outside the project can only go to User (a project's exclusions cover
+ *  only its own files), kept as typed; `outside` says so. */
+export function placeExclusion(pattern: string, target: Scope, root: string, home: string): { pattern: string; target: Scope; outside: boolean } {
+  const full = pattern.startsWith('~/') ? home + pattern.slice(1) : pattern.startsWith('/') ? pattern : undefined
+  if (!full) return { pattern, target, outside: false }
+  const inside = full.startsWith(root + '/') && full.length > root.length + 1
+  if (!inside) return { pattern, target: 'user', outside: true }
+  return { pattern: target === 'project' ? full.slice(root.length + 1) : pattern, target, outside: false }
+}
 
 // `/md-scrub exclude <path>` adds a path exclusion from the prompt box, where Claude Code's typeahead
 // completes the path; the panel has its own field (`a`).
@@ -326,10 +342,10 @@ export function parseExclude(args: string): { pattern: string; scope: Scope } | 
 
 /** Typeahead rows for the word being typed after `/md-scrub exclude`: folders (taking one lists what's
  *  in it next) and Markdown files under `root`, or --user. None anywhere else in the prompt. */
-export async function excludeRows(list: List, root: string, text: string, token: string, start: number): Promise<PromptAutocompleteSuggestion[]> {
+export async function excludeRows(list: List, root: string, text: string, token: string, start: number, home = ''): Promise<PromptAutocompleteSuggestion[]> {
   if (!/^\/md-scrub\s+exclude\s/.test(text.slice(0, start))) return []
   if (token.startsWith('-')) return '--user'.startsWith(token) ? [{ text: '--user', description: 'for every project, not just this one' }] : []
-  return (await suggest(list, root, token)).map(path => ({
+  return (await suggest(list, root, token, home)).map(path => ({
     text: path,
     description: path.endsWith('/') ? 'folder: everything in it' : 'file',
   }))
@@ -439,13 +455,15 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
   // `/md-scrub` opens the panel; `/md-scrub exclude <path> [--user]` adds a path exclusion first and
   // opens it on Path exclusions, the new cell focused to show where it went.
   on('command.run', { command: 'md-scrub' }, async ($, e) => {
-    const exclude = parseExclude(e.args)
-    if (exclude && !exclude.pattern) return { text: 'Usage: /md-scrub exclude <path, folder/ or *.md> [--user]' }
+    const parsed = parseExclude(e.args)
+    if (parsed && !parsed.pattern) return { text: 'Usage: /md-scrub exclude <path, folder/ or *.md> [--user]' }
+    const at = parsed ? await paths($) : undefined
+    const exclude = parsed && at ? placeExclusion(parsed.pattern, parsed.scope, at.root, at.home) : undefined
     tab = exclude ? 'exclusions' : 'topics'; adding = undefined; choice = undefined; focused = undefined; message = undefined
-    if (exclude) await setPattern($, exclude.pattern, exclude.scope, true)
+    if (exclude) await setPattern($, exclude.pattern, exclude.target, true)
     // Opened as a dialog: the arrows walk its buttons (otherwise they scroll) and Esc closes it.
     await $.ui.open({ id: PANE, title: 'md-scrub', focus: true, closeOnEscape: true, holdToasts: true })
-    if (exclude) await $.ui.focus({ requestId: PANE, key: `${exclude.scope}@x:${exclude.pattern}` }).catch(() => {})
+    if (exclude) await $.ui.focus({ requestId: PANE, key: `${exclude.target}@x:${exclude.pattern}` }).catch(() => {})
     return {}
   })
 
@@ -453,7 +471,8 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
   on('prompt.autocomplete', async ($, e, next) => {
     const result = await next(e)
     if (!/^\/md-scrub\s+exclude\s/.test(e.text)) return result
-    const rows = await excludeRows(dir => $.fs.list(dir), (await paths($)).root, e.text, e.token, e.start)
+    const at = await paths($)
+    const rows = await excludeRows(dir => $.fs.list(dir), at.root, e.text, e.token, e.start, at.home)
     return rows.length ? { suggestions: [...result.suggestions, ...rows] } : result
   }).catch(($, e, next) => next(e))
 
@@ -582,12 +601,13 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
       const toggle = (x: string | undefined, s: Scope) => { if (x) void setPattern($, x, s, !data.exclusions[s].includes(x)) }
       const list = (dir: string) => $.fs.list(dir)
       const root = cache?.p.root ?? p.root
+      const placed = adding ? placeExclusion(adding.query.trim(), adding.target, root, p.home) : undefined
       // A match fills the field rather than adding, so a folder can be opened up path by path; the
       // focus goes back to the field, where Enter adds what it holds.
       const fill = async (path: string) => {
         if (!adding) return
         adding.query = path
-        adding.matches = (await suggest(list, root, path)).slice(0, MATCHES)
+        adding.matches = (await suggest(list, root, path, p.home)).slice(0, MATCHES)
         $.ui.invalidate('ui.render')
         await $.ui.focus({ requestId: PANE, key: 'add' }).catch(() => {})
       }
@@ -616,13 +636,17 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
                   onInput={async (value: string) => {
                     if (!adding) return
                     adding.query = value
-                    adding.matches = (await suggest(list, root, value)).slice(0, MATCHES)
+                    adding.matches = (await suggest(list, root, value, p.home)).slice(0, MATCHES)
                     $.ui.invalidate('ui.render')
                   }}
-                  onSubmit={(value: string) => add(value.trim(), adding?.target ?? 'project')} />
+                  onSubmit={(value: string) => {
+                    const to = placeExclusion(value.trim(), adding?.target ?? 'project', root, p.home)
+                    add(to.pattern, to.target)
+                  }} />
                 <Button key="target" plain dimColor
                   onPress={() => { if (adding) { adding.target = adding.target === 'project' ? 'user' : 'project'; $.ui.invalidate('ui.render') } }}>
-                  <Text dimColor>adds to </Text><Text color={ORANGE}>{adding.target === 'project' ? p.projectName : 'User'}</Text>
+                  <Text dimColor>adds to </Text><Text color={ORANGE}>{placed?.target === 'project' ? p.projectName : 'User'}</Text>
+                  {placed?.outside ? <Text dimColor> · outside {p.projectName}</Text> : null}
                 </Button>
               </Box>
               {adding.matches.map(m => (
@@ -633,7 +657,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
             <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" marginTop={1}>
               <Button key="addx" plain hotkey="a" dimColor onPress={async () => {
                 message = undefined
-                adding = { query: '', target: 'project', matches: (await suggest(list, root, '')).slice(0, MATCHES) }
+                adding = { query: '', target: 'project', matches: (await suggest(list, root, '', p.home)).slice(0, MATCHES) }
                 $.ui.invalidate('ui.render')
               }}>path exclusion</Button>
             </Box>

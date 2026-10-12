@@ -221,4 +221,18 @@ describe("exclusions", () => {
     expect(untouched(userAt("site/Docs/Legal/terms.md"))).toBe(true);
     expect(userAt("docs/a.md").hookSpecificOutput.updatedInput).toBeDefined();
   });
+
+  test("~/ and full paths in ~/.claude/md-scrub/exclusions match only that place", () => {
+    const home = tmp("home");
+    mkdirSync(join(home, ".claude", "md-scrub"), { recursive: true });
+    const inHome = join(home, "work");
+    mkdirSync(join(inHome, "drafts"), { recursive: true });
+    writeFileSync(join(home, ".claude", "md-scrub", "exclusions"), `~/work/drafts/\n${p}/docs/legal/\n`);
+    const at = (dir: string, rel: string) => run("pre", { ...write(join(dir, rel), DOC("zod (MIT)")), cwd: dir }, { HOME: home }).json;
+    expect(untouched(at(inHome, "drafts/a.md"))).toBe(true);
+    expect(untouched(at(p, "docs/legal/terms.md"))).toBe(true);
+    // Anchored, so the same folder names elsewhere are still checked.
+    expect(at(p, "work/drafts/a.md").hookSpecificOutput.updatedInput).toBeDefined();
+    expect(at(inHome, "docs/legal/terms.md").hookSpecificOutput.updatedInput).toBeDefined();
+  });
 });

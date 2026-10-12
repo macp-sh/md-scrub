@@ -2,7 +2,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
   withTopicSetting, topicSetting, effective, patterns, withPattern, logActions, isPaused, header, isExcluded,
-  projectLog, logDetail, inherited, shown, flipped, providerName, ownSettings, parseExclude, excludeRows,
+  projectLog, logDetail, inherited, shown, flipped, providerName, ownSettings, parseExclude, excludeRows, placeExclusion,
 } from '../hooks/panel'
 
 const HOME = '/home/test'
@@ -251,6 +251,31 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(writes.get(`${PROJECT}/exclusions`)).toBe('# ours\nlegal/\ndocs/\n')
   })
 
+  test(`${surface}: a path outside the project goes to User, and the field says so`, async ($, on) => {
+    const writes = new Map<string, string>()
+    fakeFiles(on, project(), writes)
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'tab:exclusions' })
+    await ui.press({ key: 'addx' })
+    // ~/ lists your home folder.
+    await ui.input({ key: 'add', text: '~/', kind: 'change' })
+    expect(await ui.find({ key: 'm:~/.claude/' })).toBeDefined()
+    expect(await ui.find({ text: /outside acme-app/ })).toBeDefined()
+    await ui.input({ key: 'add', text: '~/notes/' })
+    expect(writes.get(`${USER}/exclusions`)).toBe('~/notes/\n')
+    expect(writes.has(`${PROJECT}/exclusions`)).toBe(false)
+  })
+
+  test(`${surface}: a full path inside the project is saved relative to it`, async ($, on) => {
+    const writes = new Map<string, string>()
+    fakeFiles(on, project(), writes)
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'tab:exclusions' })
+    await ui.press({ key: 'addx' })
+    await ui.input({ key: 'add', text: `${ROOT}/docs/` })
+    expect(writes.get(`${PROJECT}/exclusions`)).toBe('docs/\n')
+  })
+
   test(`${surface}: the field adds to User once switched`, async ($, on) => {
     const writes = new Map<string, string>()
     fakeFiles(on, project(), writes)
@@ -389,6 +414,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
 }
 
+test('a path typed in full is made relative for the project, or goes to User when outside it', () => {
+  expect(placeExclusion('docs/', 'project', ROOT, HOME)).toEqual({ pattern: 'docs/', target: 'project', outside: false })
+  expect(placeExclusion(`${ROOT}/docs/`, 'project', ROOT, HOME)).toEqual({ pattern: 'docs/', target: 'project', outside: false })
+  expect(placeExclusion(`${ROOT}/docs/`, 'user', ROOT, HOME)).toEqual({ pattern: `${ROOT}/docs/`, target: 'user', outside: false })
+  expect(placeExclusion('~/notes/', 'project', ROOT, HOME)).toEqual({ pattern: '~/notes/', target: 'user', outside: true })
+  expect(placeExclusion('/elsewhere/', 'project', ROOT, HOME)).toEqual({ pattern: '/elsewhere/', target: 'user', outside: true })
+})
+
 test('/md-scrub exclude takes a path and --user', () => {
   expect(parseExclude('exclude docs/')).toEqual({ pattern: 'docs/', scope: 'project' })
   expect(parseExclude('exclude --user *.draft.md')).toEqual({ pattern: '*.draft.md', scope: 'user' })
@@ -421,6 +454,11 @@ test('the typeahead after /md-scrub exclude offers folders and Markdown files, a
   expect(await rows('/md-scrub exclude .')).toEqual(['.claude/'])
   expect(await rows('/md-scrub exclude docs/')).toEqual(['docs/maps.md'])
   expect(await rows('/md-scrub exclude --u')).toEqual(['--user'])
+  // From ~/ and / too, shown as typed.
+  expect((await excludeRows(list, ROOT, ...at('/md-scrub exclude /p/'))).map(r => r.text)).toEqual([])
+  const homeList = async (dir: string) => (dir === '/home/test' ? [{ name: 'notes', kind: 'dir' }] : dir === '/' ? [{ name: 'p', kind: 'dir' }] : [])
+  expect((await excludeRows(homeList, ROOT, ...at('/md-scrub exclude ~/n'), '/home/test')).map(r => r.text)).toEqual(['~/notes/'])
+  expect((await excludeRows(homeList, ROOT, ...at('/md-scrub exclude /'), '/home/test')).map(r => r.text)).toEqual(['/p/'])
   expect(await rows('please exclude do')).toEqual([])
 })
 

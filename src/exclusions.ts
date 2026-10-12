@@ -5,10 +5,11 @@
 //   notes/*.md       anything else is a glob
 // The project's file (<project root>/.claude/md-scrub/exclusions) is relative to the project root.
 // The built-in defaults/exclusions and your ~/.claude/md-scrub/exclusions apply everywhere, so their
-// globs match in any folder. Blank lines and lines starting with # are skipped.
+// globs match in any folder, except a full path (/Users/me/notes/) or one from your home folder
+// (~/notes/), which matches only there. Blank lines and lines starting with # are skipped.
 import { readFileSync } from "node:fs";
 import { join, relative, isAbsolute, resolve, dirname } from "node:path";
-import { USER_DIR } from "./config.ts";
+import { USER_DIR, HOME } from "./config.ts";
 import { DEFAULTS_DIR, projectFolder } from "./scrub.ts";
 
 const cache = new Map<string, Bun.Glob[]>();
@@ -20,13 +21,18 @@ function patterns(file: string, anywhere: boolean): Bun.Glob[] {
   try {
     lines = readFileSync(file, "utf8").split("\n");
   } catch {}
+  const home = HOME.toLowerCase().replace(/\/$/, "");
   const globs = lines
     .map((l) => l.trim().toLowerCase())
     .filter((l) => l && !l.startsWith("#"))
-    .map((p) => p.replace(/^\.?\//, ""))
-    .map((p) => (p.endsWith("/") ? `${p}**` : p))
-    .map((p) => (anywhere || !p.includes("/") ? `**/${p}` : p))
-    .map((p) => new Bun.Glob(p));
+    .map((l) => {
+      // Where a pattern applies everywhere, ~/ and a leading / anchor it to that one place.
+      const full = anywhere && l.startsWith("~/") ? home + l.slice(1) : anywhere && l.startsWith("/") ? l : undefined;
+      const p = full ?? l.replace(/^\.?\//, "");
+      const glob = p.endsWith("/") ? `${p}**` : p;
+      if (full) return new Bun.Glob(glob);
+      return new Bun.Glob(anywhere || !p.includes("/") ? `**/${glob}` : glob);
+    });
   cache.set(file, globs);
   return globs;
 }

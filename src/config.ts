@@ -7,7 +7,7 @@ import { PROVIDERS } from "./jev-model.ts";
 export const ROOT = dirname(import.meta.dir);
 
 // $HOME first, so a process given another home (tests) uses it; Bun's homedir() ignores a changed HOME.
-const HOME = process.env.HOME || homedir();
+export const HOME = process.env.HOME || homedir();
 
 // Your settings, topics and exclusions, beside Claude Code's own ~/.claude files. State and the log
 // live under it too, outside the plugin's install folder (replaced on every update); the status mod

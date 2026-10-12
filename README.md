@@ -82,7 +82,7 @@ The panel writes plain files, which you can also edit or commit. They live in `~
 | :- | :- | :- |
 | Switch md-scrub off | `config.json` | `{ "enabled": false }` |
 | Turn off the built-in topic, keep your own | `config.json` | `{ "topics": { "third-party-terms": { "enabled": false } } }` |
-| Exclude files or folders | `exclusions` | One per line, such as `legal/` or `docs/privacy.md` |
+| Exclude files or folders | `exclusions` | One per line, such as `legal/` or `docs/privacy.md`. In your own (user) file, `~/notes/` or a full path matches only that place. |
 
 ## Privacy and cost
 
