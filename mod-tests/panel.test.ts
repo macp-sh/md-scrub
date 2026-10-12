@@ -2,7 +2,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
   withTopicSetting, topicSetting, effective, patterns, withPattern, logActions, isPaused, header, isExcluded,
-  projectLog, logDetail, inherited, shown, flipped,
+  projectLog, logDetail, inherited, shown, flipped, providerName, ownSettings,
 } from '../hooks/panel'
 
 const HOME = '/home/test'
@@ -112,15 +112,30 @@ test('paused only while the latest Jev or action entry is a recent unchecked wri
 
 test('the header comes from the start-up check, for this project only', () => {
   expect(header(undefined, ROOT, false)).toEqual({ state: 'on' })
-  expect(header({ cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' }, ROOT, false))
-    .toEqual({ state: 'off', reason: 'add your OpenRouter key in /plugin > Installed > md-scrub > Configure' })
+  expect(header({ cwd: ROOT, line: 'off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure' }, ROOT, false))
+    .toEqual({ state: 'off', reason: 'add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure' })
   expect(header({ cwd: '/elsewhere', line: 'off: a settings or topic file has an error' }, ROOT, false)).toEqual({ state: 'on' })
   expect(header({ cwd: ROOT, line: '1 topic has an error' }, ROOT, false)).toEqual({ state: 'on', warning: '1 topic has an error' })
   expect(header(undefined, ROOT, true).state).toBe('paused')
   // A key added since the start-up check: that check's 'no key' line no longer holds.
-  const noKey = { cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' }
-  expect(header(noKey, ROOT, false, true)).toEqual({ state: 'on' })
-  expect(header({ cwd: ROOT, line: 'off: a settings or topic file has an error' }, ROOT, false, true).state).toBe('off')
+  const noKey = { cwd: ROOT, line: 'off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure' }
+  expect(header(noKey, ROOT, false, 'OpenRouter')).toEqual({ state: 'on', provider: 'OpenRouter' })
+  expect(header({ cwd: ROOT, line: 'off: a settings or topic file has an error' }, ROOT, false, 'OpenRouter').state).toBe('off')
+  // A start-up line from before TypeSafe keys were accepted still counts as 'no key'.
+  expect(header({ cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' }, ROOT, false, 'TypeSafe').state).toBe('on')
+})
+
+test("a topic's own Jev settings read as one line", () => {
+  expect(ownSettings(undefined)).toBe('')
+  expect(ownSettings({ model: 'jev-1.14.0', flag: 0.35 })).toBe('model jev-1.14.0 · flag 0.35')
+  expect(ownSettings({ model: { typesafe: 'jev-1.14.0', openrouter: 'typesafe/jev-1.14' }, mostly: 0.6 }))
+    .toBe('model jev-1.14.0 / typesafe/jev-1.14 · mostly 0.6')
+})
+
+test('Jev is reached through TypeSafe when its key is set, else OpenRouter', () => {
+  expect(providerName({ typesafe: true, openrouter: true })).toBe('TypeSafe')
+  expect(providerName({ openrouter: true })).toBe('OpenRouter')
+  expect(providerName({})).toBeUndefined()
 })
 
 // ---------- the pane, against a small in-memory file system ----------
@@ -182,6 +197,9 @@ function project(extra: Record<string, string> = {}) {
   ])
 }
 
+// A user topic with its own Jev settings.
+const advice = (jev: unknown) => JSON.stringify({ name: 'medical or financial advice', description: 'Recommendations about health or money.', jev })
+
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: topics show the result here, and a cell toggles that scope's config.json`, async ($, on) => {
     const files = project()
@@ -207,11 +225,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 
   test(`${surface}: the header says why md-scrub is off`, async ($, on) => {
-    const files = project({ [`${STATE}/setup.json`]: JSON.stringify({ cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' }) })
+    const files = project({ [`${STATE}/setup.json`]: JSON.stringify({ cwd: ROOT, line: 'off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure' }) })
     fakeFiles(on, files, new Map())
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     expect(await ui.find({ text: 'off' })).toBeDefined()
-    expect(await ui.find({ text: /add your OpenRouter key/ })).toBeDefined()
+    expect(await ui.find({ text: /add an OpenRouter or TypeSafe key/ })).toBeDefined()
   })
 
   test(`${surface}: an exclusion is added to the project by default`, async ($, on) => {
@@ -291,23 +309,37 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 
   test(`${surface}: off for want of a key, k closes the panel and opens /plugin`, async ($, on) => {
-    const noKey = JSON.stringify({ cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' })
+    const noKey = JSON.stringify({ cwd: ROOT, line: 'off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure' })
     fakeFiles(on, project({ [`${STATE}/setup.json`]: noKey }), new Map())
     const done: string[] = []
     on('ui.close', (_$, e) => { done.push(`close ${e.id}`); return { value: undefined } })
     on('command.run', (_$, e) => { done.push(`/${e.command}`); return {} })
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
-    expect(await ui.find({ text: /add OpenRouter key/ })).toBeDefined()
+    expect(await ui.find({ text: /add a Jev key/ })).toBeDefined()
     await ui.press({ key: 'key' })
     expect(done).toEqual(['close md-scrub', '/plugin'])
   })
 
-  test(`${surface}: a key added since start-up turns the header on, with no k`, { options: { openrouter_api_key: 'set' } }, async ($, on) => {
-    const noKey = JSON.stringify({ cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' })
+  test(`${surface}: a key added since start-up turns the header on and names the service, with no k`, { options: { typesafe_api_key: 'set' } }, async ($, on) => {
+    const noKey = JSON.stringify({ cwd: ROOT, line: 'off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure' })
     fakeFiles(on, project({ [`${STATE}/setup.json`]: noKey }), new Map())
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     expect(await ui.find({ text: /^on$/ })).toBeDefined()
+    expect(await ui.find({ text: /via TypeSafe/ })).toBeDefined()
     expect(await ui.find({ key: 'key' })).toBeUndefined()
+  })
+
+  test(`${surface}: a topic whose model ID is for the other service is an error`, { options: { openrouter_api_key: 'set' } }, async ($, on) => {
+    fakeFiles(on, project({ [`${USER}/topics/advice.json`]: advice({ model: 'jev-1.14.0' }) }), new Map())
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    expect(await ui.find({ text: /1 topic has an error/ })).toBeDefined()
+    expect(await ui.find({ text: '✕' })).toBeDefined()
+  })
+
+  test(`${surface}: a topic whose model ID fits the service is fine`, { options: { openrouter_api_key: 'set' } }, async ($, on) => {
+    fakeFiles(on, project({ [`${USER}/topics/advice.json`]: advice({ model: 'typesafe/jev-1.14', flag: 0.35 }) }), new Map())
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    expect(await ui.find({ text: /topic has an error/ })).toBeUndefined()
   })
 
   test(`${surface}: the log shows only this project, says what a row means and counts the rest`, async ($, on) => {

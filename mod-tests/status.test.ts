@@ -7,7 +7,7 @@ test('lines appear only when md-scrub acted', () => {
   const base = { id: 'x', file: '/p/DEPS.md', phase: 'done', startedAt: 0 }
   expect(outcomeLine({ ...base, outcome: 'scrubbed', edits: 2 })).toBe('scrubbed DEPS.md (2 edits)')
   expect(outcomeLine({ ...base, file: '/p/terms.md', outcome: 'flagged', reason: 'mostly third-party legal terms' })).toBe('flagged terms.md (mostly third-party legal terms)')
-  expect(outcomeLine({ ...base, outcome: 'unchecked' })).toBe("not checked DEPS.md (OpenRouter isn't responding)")
+  expect(outcomeLine({ ...base, outcome: 'unchecked' })).toBe("not checked DEPS.md (Jev isn't responding)")
   expect(outcomeLine({ ...base, outcome: 'clean' })).toBeUndefined()
   expect(outcomeLine({ ...base, outcome: 'clean' })).toBeUndefined()
   expect(progressLine({ ...base, phase: 'Jev 1/2' })).toBeUndefined()
@@ -109,7 +109,7 @@ test('keeps a setup problem on the line, under any outcome, until a later check 
     return { value: undefined }
   })
   // Stands in for md-scrub's session-start check, which writes setup.json.
-  let line: string | null = 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure'
+  let line: string | null = 'off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure'
   on('classic.SessionStart', () => {
     files.set(`${STATE}/setup.json`, JSON.stringify({ cwd: '/p', line }))
     return {}

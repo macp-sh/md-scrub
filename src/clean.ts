@@ -53,8 +53,11 @@ async function haikuEdits(f: FlaggedChunk, scrub: ScrubConfig): Promise<{ edits:
     `<${tag}>\n${f.body}\n</${tag}>`;
   const timeout = Math.min(config.haikuTimeoutMs, remainingMs() - 2000);
   if (timeout < 1000) return { error: "out of time before the clean-up could run" };
-  // The child needs Claude Code's login, not md-scrub's OpenRouter key.
-  const { OPENROUTER_API_KEY: _key, CLAUDE_PLUGIN_OPTION_OPENROUTER_API_KEY: _option, ...env } = process.env;
+  // The child needs Claude Code's login, not md-scrub's Jev keys.
+  const {
+    OPENROUTER_API_KEY: _key, CLAUDE_PLUGIN_OPTION_OPENROUTER_API_KEY: _option,
+    TYPESAFE_API_KEY: _tsKey, CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY: _tsOption, ...env
+  } = process.env;
   let proc;
   try {
     proc = Bun.spawn([...claudeArgs(scrub, f.topics), prompt], {

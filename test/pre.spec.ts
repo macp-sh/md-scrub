@@ -130,7 +130,7 @@ describe("Bash", () => {
 describe("when Jev can't answer, md-scrub stands down", () => {
   test("the write goes through unchanged and is logged as unchecked", () => {
     expect(pre({ ...write(at("down.md"), DOC("We use zod (MIT).")), tool_use_id: "toolu_down1" }, OUTAGE)).toBeNull();
-    expect(stateJson("calls/toolu_down1.json")).toMatchObject({ outcome: "unchecked", reason: "OpenRouter isn't responding" });
+    expect(stateJson("calls/toolu_down1.json")).toMatchObject({ outcome: "unchecked", reason: "Jev isn't responding" });
     expect(actions().some((a) => a.action === "unchecked" && a.file === at("down.md"))).toBe(true);
   });
 
@@ -224,7 +224,7 @@ describe("start-up check", () => {
 
   test("names a missing key and a missing claude in one message", () => {
     const msg = run("session-start", {}, { PATH: PATH_WITHOUT_CLAUDE, OPENROUTER_API_KEY: "" }).json.systemMessage;
-    expect(msg).toContain("off until you add an OpenRouter key");
+    expect(msg).toContain("off until you add an OpenRouter or TypeSafe key");
     expect(msg).toContain("`claude` isn't on the PATH");
   });
 
@@ -241,7 +241,7 @@ describe("start-up check", () => {
   test("leaves the most serious problem for the status line, and clears it once fixed", () => {
     const p = tmp("proj");
     run("session-start", { cwd: p }, { PATH: PATH_WITHOUT_CLAUDE, OPENROUTER_API_KEY: "" });
-    expect(stateJson("setup.json")).toEqual({ cwd: p, line: "off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure (+1 more)" });
+    expect(stateJson("setup.json")).toEqual({ cwd: p, line: "off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure (+1 more)" });
     run("session-start", { cwd: p }, { PATH: PATH_WITHOUT_CLAUDE });
     expect(stateJson("setup.json").line).toBe("can't scrub: claude isn't on the PATH");
     run("session-start", { cwd: p }, { OPENROUTER_API_KEY: "test" });
@@ -264,10 +264,10 @@ describe("start-up check", () => {
     const { OPENROUTER_API_KEY: _key, ...rest } = ENV;
     const env = { ...rest, PATH: `${dirname(process.execPath)}:${PATH_WITH_CLAUDE}` };
     const viaCheck = Bun.spawnSync(["/bin/sh", CHECK], { cwd: p, env, stdin: Buffer.from("{}") });
-    expect(JSON.parse(viaCheck.stdout.toString()).systemMessage).toContain("off until you add an OpenRouter key");
+    expect(JSON.parse(viaCheck.stdout.toString()).systemMessage).toContain("off until you add an OpenRouter or TypeSafe key");
     // The control: without --no-env-file, Bun would have loaded the project's key.
     const plain = Bun.spawnSync([process.execPath, CLI, "session-start"], { cwd: p, env, stdin: Buffer.from("{}") });
-    expect(plain.stdout.toString()).not.toContain("OpenRouter key");
+    expect(plain.stdout.toString()).not.toContain("TypeSafe key");
   });
 });
 

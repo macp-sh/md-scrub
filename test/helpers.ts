@@ -22,8 +22,8 @@ export const PATH_WITH_CLAUDE = `${FAKE_BIN}:/usr/bin:/bin`;
 export const PATH_WITHOUT_CLAUDE = "/usr/bin:/bin";
 
 // By default the hooks have a key and the Jev mock answers from markers (see jev-mock.ts); tests of an
-// outage set FAKE_JEV, and tests of a missing key clear OPENROUTER_API_KEY.
-export const ENV: Record<string, string | undefined> = { ...process.env, PATH: PATH_WITH_CLAUDE, OPENROUTER_API_KEY: "test", FAKE_JEV: "score", MD_SCRUB_INNER: "" };
+// outage set FAKE_JEV, and tests of a missing key clear OPENROUTER_API_KEY. TypeSafe is off unless a test sets it.
+export const ENV: Record<string, string | undefined> = { ...process.env, PATH: PATH_WITH_CLAUDE, OPENROUTER_API_KEY: "test", TYPESAFE_API_KEY: "", FAKE_JEV: "score", MD_SCRUB_INNER: "" };
 
 // A project whose .claude/md-scrub/ holds the fixture topic with the shipped topic switched off, so
 // editing the shipped definition breaks nothing here. Hook calls pass the project as their cwd.

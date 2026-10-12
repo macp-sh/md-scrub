@@ -6,7 +6,9 @@ import { join } from "node:path";
 
 process.env.HOME = mkdtempSync(join(tmpdir(), "md-scrub-test-home-"));
 process.env.OPENROUTER_API_KEY = "";
+process.env.TYPESAFE_API_KEY = "";
 delete process.env.CLAUDE_PLUGIN_OPTION_OPENROUTER_API_KEY;
+delete process.env.CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY;
 delete process.env.CLAUDE_PROJECT_DIR;
 delete process.env.CLAUDE_PLUGIN_ROOT;
 delete process.env.FAKE_JEV;

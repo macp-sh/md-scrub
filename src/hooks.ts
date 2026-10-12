@@ -72,10 +72,10 @@ function action(action: Outcome, file: string, extra: Record<string, unknown> = 
 }
 
 // The topics that flagged anything, so messages cite only those. A text that is mostly a topic may have
-// no single chunk over the flag threshold; then every topic is cited.
+// no single chunk over the flag threshold; then the topics it is mostly are cited.
 const flaggedTopics = (d: Detection, scrub?: ScrubConfig) => {
   const ids = [...new Set(d.flagged.flatMap((f) => f.topics))];
-  return ids.length || !scrub ? ids : scrub.topics.map((t) => t.id);
+  return ids.length || !scrub ? ids : (d.mostlyTopics ?? scrub.topics.map((t) => t.id));
 };
 
 // Any unexpected error is reported in the terminal rather than crashing the hook, which Claude Code
@@ -90,9 +90,9 @@ function failure(e: unknown, what: string): Output {
   return { systemMessage: `md-scrub: internal error, so ${what} wasn't checked: ${message}` };
 }
 
-// Whether a whole text is mostly a topic, by Jev's length-weighted share.
-const isMostly = (d: Detection, scrub: ScrubConfig, text: string) =>
-  text.length >= config.mostlyMinChars && d.mostly !== undefined && d.mostly >= scrub.thresholds.mostly;
+// Whether a whole text is mostly a topic: some topic's length-weighted share is over its own threshold.
+const isMostly = (d: Detection, text: string) =>
+  text.length >= config.mostlyMinChars && !!d.mostlyTopics?.length;
 const topicNames = (scrub: ScrubConfig, ids?: string[]) =>
   scrub.topics.filter((t) => !ids || ids.includes(t.id)).map((t) => t.name).join(" or ");
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -152,17 +152,17 @@ async function preTool(input: any, job: Job): Promise<Output> {
     if (d.jevError) {
       // Stand down: the write goes through as sent.
       job.outcome = "unchecked";
-      job.reason = "OpenRouter isn't responding";
+      job.reason = "Jev isn't responding";
       action("unchecked", target, { reason: d.jevError });
       return null;
     }
     // A new file that is mostly unwanted content can't be scrubbed down sensibly: leave it, say so.
-    if (tool === "Write" && isMostly(d, scrub, piece.get)) {
+    if (tool === "Write" && isMostly(d, piece.get)) {
       job.outcome = "flagged";
-      job.reason = `mostly ${topicNames(scrub)}`;
+      job.reason = `mostly ${topicNames(scrub, d.mostlyTopics)}`;
       action("flagged", target, { topics: flaggedTopics(d, scrub), reason: "mostly", share: percent(d) });
       return notice(
-        `md-scrub: ${target} is mostly ${topicNames(scrub)} (about ${percent(d)}%), so it was saved as written. ` +
+        `md-scrub: ${target} is mostly ${topicNames(scrub, d.mostlyTopics)} (about ${percent(d)}%), so it was saved as written. ` +
           `${rule(scrub)} Tell the user; they decide whether to keep it.`,
       );
     }
@@ -209,8 +209,8 @@ export function sessionStart(input: any): Output {
   const problems: { message: string; line: string }[] = [];
   if (!apiKey()) {
     problems.push({
-      message: "off until you add an OpenRouter key, in /plugin > Installed > md-scrub > Configure",
-      line: "off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure",
+      message: "off until you add an OpenRouter or TypeSafe key, in /plugin > Installed > md-scrub > Configure",
+      line: "off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure",
     });
   }
   try {
@@ -349,8 +349,8 @@ async function sweep(input: any, job: Job): Promise<{ out: Output; outcome: Outc
       continue;
     }
     // A whole page of unwanted content (a saved terms page, say) can't be scrubbed down: flag it.
-    if (isMostly(d, scrub, text)) {
-      mostly.push(`${f} (about ${percent(d)}% ${topicNames(scrub)})`);
+    if (isMostly(d, text)) {
+      mostly.push(`${f} (about ${percent(d)}% ${topicNames(scrub, d.mostlyTopics)})`);
       rules.add(rule(scrub));
       action("flagged", f, { topics: flaggedTopics(d, scrub), reason: "mostly", share: percent(d) });
       continue;
@@ -379,7 +379,7 @@ async function sweep(input: any, job: Job): Promise<{ out: Output; outcome: Outc
       : undefined;
   const flaggedCount = problems.length + mostly.length;
   const outcome: Outcome = flaggedCount ? "flagged" : scrubbed.length ? "scrubbed" : unchecked.length ? "unchecked" : "clean";
-  job.reason = flaggedCount ? plural(flaggedCount, "file") : unchecked.length ? "OpenRouter isn't responding" : "";
+  job.reason = flaggedCount ? plural(flaggedCount, "file") : unchecked.length ? "Jev isn't responding" : "";
   if (!scrubbed.length && !flaggedCount && !skipped.length) {
     return { out: limitNote ? { systemMessage: limitNote } : null, outcome };
   }

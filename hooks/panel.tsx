@@ -1,4 +1,5 @@
 import type { EngineInterface, On, PluginOptions, Register, RenderChildren, RenderElement } from 'claude-code'
+import { jevError, type JevOverride, type ProviderId } from '../src/jev-model'
 
 // The /md-scrub panel: whether md-scrub is working (header), what it looks for (Topics), where it
 // doesn't look (Exclusions) and what it did (Log). Settings are plain files, read and written here:
@@ -8,8 +9,8 @@ import type { EngineInterface, On, PluginOptions, Register, RenderChildren, Rend
 //   state:     ~/.claude/md-scrub/state/log.jsonl, setup.json (written by the hooks)
 
 const PANE = 'md-scrub'
-// The start-up check's line when md-scrub is off for want of an OpenRouter key (src/hooks.ts).
-const NEEDS_KEY = /OpenRouter key/
+// The start-up check's line when md-scrub is off for want of a Jev key (src/hooks.ts).
+const NEEDS_KEY = /(OpenRouter|TypeSafe) key/
 const SCOPES = ['user', 'project'] as const
 type Scope = (typeof SCOPES)[number]
 type Tab = 'topics' | 'exclusions' | 'log'
@@ -21,11 +22,12 @@ export type Topic = {
   builtIn: boolean
   def: boolean // on unless a scope says otherwise
   file?: string // the file a person edits: a custom topic's, or a user copy of a built-in one
+  jev?: JevOverride // its own model and thresholds, as the hooks merge them across layers
   error?: string
 }
 export type Settings = { user: Record<string, unknown>; project: Record<string, unknown> }
 export type LogEntry = { t: string; event: string; action?: string; file?: string; reason?: string; topics?: string[]; edits?: number; share?: number }
-export type Header = { state: 'on' | 'off' | 'paused'; reason?: string; warning?: string }
+export type Header = { state: 'on' | 'off' | 'paused'; reason?: string; warning?: string; provider?: string }
 
 // ---------- pure helpers (tested) ----------
 
@@ -143,15 +145,21 @@ export function isPaused(text: string, now: number): boolean {
   return false
 }
 
-/** What the header says, from setup.json (the start-up check) and the log. */
-export function header(setup: { cwd?: string | null; line?: string | null } | undefined, root: string, paused: boolean, hasKey = false): Header {
+/** Which service Jev is reached through, as src/config.ts picks it: TypeSafe when its key is set
+ *  (as an option or in the environment), else OpenRouter; none without a key. */
+export function providerName(keys: { typesafe?: boolean; openrouter?: boolean }): string | undefined {
+  return keys.typesafe ? 'TypeSafe' : keys.openrouter ? 'OpenRouter' : undefined
+}
+
+/** What the header says, from setup.json (the start-up check), the log and the provider in use. */
+export function header(setup: { cwd?: string | null; line?: string | null } | undefined, root: string, paused: boolean, provider?: string): Header {
   let line = setup?.line && (!setup.cwd || setup.cwd === root) ? setup.line : undefined
   // The start-up check found no key, but one has been added since: the hooks read it on their next run.
-  if (hasKey && line && NEEDS_KEY.test(line)) line = undefined
+  if (provider && line && NEEDS_KEY.test(line)) line = undefined
   const off = line?.match(/^(off|not running): (.*)$/)
   if (off) return { state: 'off', reason: off[2] }
-  if (paused) return { state: 'paused', reason: "OpenRouter isn't responding", warning: line }
-  return { state: 'on', warning: line }
+  if (paused) return { state: 'paused', reason: "Jev isn't responding", warning: line, provider }
+  return { state: 'on', warning: line, provider }
 }
 
 /** True when `file` (relative to the project) is covered by one of the patterns. */
@@ -212,6 +220,8 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
         const json = parseJson(await $.fs.read(file))
         if (typeof json.name === 'string') t.name = json.name
         if (typeof json.description === 'string') t.description = json.description
+        // Checked whole below, so a malformed block is kept as written for jevError to report.
+        if (json.jev !== undefined) t.jev = (isObject(json.jev) && isObject(t.jev) ? { ...t.jev, ...json.jev } : json.jev) as JevOverride
       } catch (err) {
         t.error = `${tilde(file, p.home)}: ${(err as Error).message}`
       }
@@ -230,6 +240,15 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
   }
   let setup: { cwd?: string | null; line?: string | null } | undefined
   try { setup = parseJson(await $.fs.read(`${p.state}/setup.json`)) as typeof setup } catch {}
+  // The service in use, as the hooks pick it; a topic's model ID is checked against it (src/jev-model.ts).
+  const provider = providerName({
+    typesafe: keyOptions.typesafe || !!(await $.env.get('TYPESAFE_API_KEY')),
+    openrouter: keyOptions.openrouter || !!(await $.env.get('OPENROUTER_API_KEY')),
+  })
+  for (const t of byId.values()) {
+    const err = t.error ? undefined : jevError(t.jev, provider?.toLowerCase() as ProviderId | undefined)
+    if (err) t.error = `${tilde(t.file ?? `${p.builtIn}/topics/${t.id}.json`, p.home)}: ${err}`
+  }
   const real = await $.fs.stat(p.root, { resolve: true }).then(s => s.realPath).catch(() => undefined)
   const log = projectLog(logActions(logText, Infinity), [...new Set([p.root, ...(real ? [real] : [])])])
   const manifest = await readConfig($, `${$.plugin.root}/.claude-plugin/plugin.json`)
@@ -240,7 +259,7 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
     exclusions,
     log: log.rows,
     otherLog: log.others,
-    header: header(setup, p.root, isPaused(logText, await $.clock.now()), hasKey),
+    header: header(setup, p.root, isPaused(logText, await $.clock.now()), provider),
     logError,
   }
 }
@@ -249,9 +268,9 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
 
 let tab: Tab = 'topics'
 let focused: string | undefined
-// Whether the plugin's OpenRouter key option is set, from the options it loaded with (a change in
-// /plugin reloads it). Only its presence is read; the value never reaches the panel.
-let hasKey = false
+// Which of the plugin's Jev key options are set, from the options it loaded with (a change in /plugin
+// reloads it). Only their presence is read; the values never reach the panel.
+let keyOptions = { typesafe: false, openrouter: false }
 let adding: { query: string; target: Scope; suggestions: string[] } | undefined
 let choice: { row: number; options: string[] } | undefined
 let cache: { p: Paths; data: Data } | undefined
@@ -347,6 +366,13 @@ const TABS = [['topics', 'Topics'], ['exclusions', 'Exclusions'], ['log', 'Log']
 const TAB_GAP = 3
 // How often an open panel looks for new log rows.
 const LOG_POLL_MS = 2000
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+// A topic's own Jev settings in one line, or '' when it has none.
+export const ownSettings = (jev: JevOverride | undefined): string => [
+  typeof jev?.model === 'string' ? `model ${jev.model}` : jev?.model ? `model ${Object.values(jev.model).join(' / ')}` : '',
+  jev?.flag !== undefined ? `flag ${jev.flag}` : '',
+  jev?.mostly !== undefined ? `mostly ${jev.mostly}` : '',
+].filter(Boolean).join(' · ')
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const glyph = (v: boolean | undefined) => (v === undefined ? Glyph.unset : v ? Glyph.on : Glyph.off)
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
@@ -373,7 +399,8 @@ function watchLog($: EngineInterface) {
 // status.ts's session.start hook registers the /md-scrub command (a module takes one unmatched hook per
 // event, and $ can't be passed across files); `register` below does it when this module loads alone.
 export function registerPanel(on: On, options: PluginOptions = {}) {
-  hasKey = typeof options.openrouter_api_key === 'string' && options.openrouter_api_key !== ''
+  const set = (v: unknown) => typeof v === 'string' && v !== ''
+  keyOptions = { typesafe: set(options.typesafe_api_key), openrouter: set(options.openrouter_api_key) }
 
   on('command.run', { command: 'md-scrub' }, async $ => {
     tab = 'topics'; adding = undefined; choice = undefined; focused = undefined; message = undefined
@@ -414,6 +441,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
         <Text bold color={ORANGE}>md-scrub</Text>
         <Text> · </Text>
         <Text color={hd.state === 'on' ? 'success' : hd.state === 'paused' ? 'warning' : 'error'}>{hd.state}</Text>
+        {hd.provider ? <Text dimColor> · via {hd.provider}</Text> : null}
         {hd.reason ? <Text dimColor> · {hd.reason}</Text> : null}
         {hd.warning ? <Text color="warning"> · {hd.warning}</Text> : null}
         {!hd.warning && hd.state !== 'off' && broken ? <Text color="error"> · {plural(broken, 'topic has an error', 'topics have errors')}</Text> : null}
@@ -488,6 +516,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
           <Box flexGrow={1} />
           <Box flexDirection="column" marginTop={1}>
             {sel?.error ? <Text color="error" wrap="truncate-end">{sel.error}</Text> : <Text dimColor>{sel?.description}</Text>}
+            {sel && !sel.error && ownSettings(sel.jev) ? <Text color="subtle" wrap="truncate-end">Own settings: {ownSettings(sel.jev)}</Text> : null}
             {sel && !sel.error ? <Text color="subtle" wrap="truncate-middle">{sel.file ? tilde(sel.file, p.home) : 'built into md-scrub'}</Text> : null}
           </Box>
         </Box>
@@ -610,7 +639,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
       actions.push(<Button key="key" plain hotkey="k" dimColor onPress={async () => {
         await $.ui.close({ id: PANE })
         await $.command.run({ command: 'plugin' })
-      }}>add OpenRouter key</Button>)
+      }}>add a Jev key</Button>)
     }
     const legend = [hint('↑↓', 'move'), ...(enter ? [hint('enter', enter)] : []), ...actions, hint('1-3', 'screen'), hint('esc', 'close')]
     const keys = (

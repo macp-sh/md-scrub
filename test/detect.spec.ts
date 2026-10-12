@@ -88,10 +88,92 @@ describe("Jev", () => {
     expect(d.mostly).toBeCloseTo(want, 5);
   });
 
+  // One provider per call: TypeSafe's own API when its key is set (even beside an OpenRouter key),
+  // else OpenRouter; each with its own endpoint, model and key.
+  test.each([
+    [{ OPENROUTER_API_KEY: "or" }, "https://openrouter.ai/api/alpha/decisions", "typesafe/jev-1.13", "Bearer or"],
+    [{ TYPESAFE_API_KEY: "ts" }, "https://api.typesafe.ai/v1/systemone", "jev-1.13.0", "Bearer ts"],
+    [{ OPENROUTER_API_KEY: "or", TYPESAFE_API_KEY: "ts" }, "https://api.typesafe.ai/v1/systemone", "jev-1.13.0", "Bearer ts"],
+  ])("with keys %o, Jev is called at %s", async (keys: Record<string, string>, url: string, model: string, auth: string) => {
+    const realFetch = globalThis.fetch;
+    const calls: string[] = [];
+    Object.assign(process.env, keys);
+    globalThis.fetch = (async (to: any, init: any) => {
+      calls.push(`${to} ${JSON.parse(init.body).model} ${init.headers.Authorization}`);
+      const answers = Object.fromEntries(Object.keys(JSON.parse(init.body).questions).map((id) => [id, { noul: 0.1 }]));
+      return Response.json({ answers });
+    }) as typeof fetch;
+    try {
+      await detect("We use zod (MIT).", FIX);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.OPENROUTER_API_KEY = "";
+      process.env.TYPESAFE_API_KEY = "";
+    }
+    expect(new Set(calls)).toEqual(new Set([`${url} ${model} ${auth}`]));
+  });
+
+  describe("a topic's own Jev settings", () => {
+    // Every question scores 0.5; requests are recorded as `<model>: <question ids>`.
+    async function scored<T>(fn: () => Promise<T>): Promise<{ result: T; requests: string[] }> {
+      const realFetch = globalThis.fetch;
+      const requests: string[] = [];
+      process.env.OPENROUTER_API_KEY = "or";
+      globalThis.fetch = (async (_url: any, init: any) => {
+        const { model, questions } = JSON.parse(init.body);
+        requests.push(`${model}: ${Object.keys(questions).sort().join(" ")}`);
+        return Response.json({ answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { noul: 0.5 }])) });
+      }) as typeof fetch;
+      try { return { result: await fn(), requests }; } finally {
+        globalThis.fetch = realFetch;
+        process.env.OPENROUTER_API_KEY = "";
+      }
+    }
+    const base = FIX.topics[0]!;
+    const withTopics = (...topics: typeof FIX.topics) => ({ ...FIX, topics });
+
+    test("its flag threshold replaces the settings' for it alone", async () => {
+      const strict = { ...base, id: "strict", jev: { flag: 0.6 } };
+      const { result } = await scored(() => detect("Plain notes.", withTopics(base, strict)));
+      expect(result.flagged.flatMap((f) => f.topics)).toEqual([base.id]);
+    });
+
+    test("its model gets a request of its own; the rest share md-scrub's", async () => {
+      const own = { ...base, id: "own", jev: { model: "typesafe/jev-9" } };
+      const { requests } = await scored(() => detect("Plain notes.", withTopics(base, own)));
+      expect(requests.sort()).toEqual([
+        `typesafe/jev-1.13: ${base.id} ${base.id}__mostly`,
+        "typesafe/jev-9: own own__mostly",
+      ]);
+    });
+
+    test("its mostly threshold decides whether the text is mostly it", async () => {
+      const strict = { ...base, id: "strict", jev: { mostly: 0.6 } };
+      const { result } = await scored(() => detect("Plain notes.", withTopics(base, strict)));
+      expect(result.mostly).toBeCloseTo(0.5, 5);
+      expect(result.mostlyTopics).toEqual([base.id]);
+    });
+  });
+
+  test("a TypeSafe error body is reported, whatever its shape", async () => {
+    const realFetch = globalThis.fetch;
+    process.env.TYPESAFE_API_KEY = "ts";
+    globalThis.fetch = (async () => Response.json({ detail: [{ loc: ["body", "model"], msg: "unknown model" }] }, { status: 422 })) as unknown as typeof fetch;
+    try {
+      const d = await detect("We use zod (MIT).", FIX);
+      expect(d.flagged).toEqual([]);
+      expect(d.jevError).toContain("Jev HTTP 422 (TypeSafe)");
+      expect(d.jevError).toContain("unknown model");
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.TYPESAFE_API_KEY = "";
+    }
+  });
+
   test("when Jev can't answer, nothing is flagged and the error says why: md-scrub stands down", async () => {
     const d = await detect("We use zod (MIT).", FIX);
     expect(d.flagged).toEqual([]);
-    expect(d.jevError).toBe("OPENROUTER_API_KEY not set");
+    expect(d.jevError).toBe("no Jev key set (OpenRouter or TypeSafe)");
     expect(d.mostly).toBeUndefined();
   });
 });

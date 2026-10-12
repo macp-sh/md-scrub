@@ -20,8 +20,6 @@ mkdirSync(STATE_DIR, { recursive: true });
 const env = process.env;
 
 export const config = {
-  jevModel: "typesafe/jev-1.13",
-  jevUrl: "https://openrouter.ai/api/alpha/decisions",
   jevTimeoutMs: 8000,
   chunkChars: 3000,
   concurrency: 6,
@@ -51,9 +49,23 @@ export const remainingMs = () => budget.until - Date.now();
 export const project = { root: undefined as string | undefined };
 export const setProjectRoot = (cwd: string | undefined) => (project.root = env.CLAUDE_PROJECT_DIR || cwd || undefined);
 
-export function apiKey() {
-  return env.CLAUDE_PLUGIN_OPTION_OPENROUTER_API_KEY || env.OPENROUTER_API_KEY;
+// Jev is reached one of two ways, each with its own key, endpoint and pinned model. One is used per
+// call, never both: TypeSafe's own API when its key is set, else OpenRouter. There is no failover.
+export const PROVIDERS = {
+  typesafe: { id: "typesafe", name: "TypeSafe", url: "https://api.typesafe.ai/v1/systemone", model: "jev-1.13.0" },
+  openrouter: { id: "openrouter", name: "OpenRouter", url: "https://openrouter.ai/api/alpha/decisions", model: "typesafe/jev-1.13" },
+} as const;
+
+export type Provider = (typeof PROVIDERS)[keyof typeof PROVIDERS] & { key: string };
+
+export function jevProvider(): Provider | undefined {
+  const typesafe = env.CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY || env.TYPESAFE_API_KEY;
+  if (typesafe) return { ...PROVIDERS.typesafe, key: typesafe };
+  const openrouter = env.CLAUDE_PLUGIN_OPTION_OPENROUTER_API_KEY || env.OPENROUTER_API_KEY;
+  if (openrouter) return { ...PROVIDERS.openrouter, key: openrouter };
 }
+
+export const apiKey = () => jevProvider()?.key;
 
 export function log(entry: Record<string, unknown>) {
   try {

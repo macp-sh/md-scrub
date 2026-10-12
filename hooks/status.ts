@@ -44,7 +44,7 @@ async function readJson<T>($: EngineInterface, path: string): Promise<T | undefi
 export function outcomeLine(r: CallRecord): string | undefined {
   if (r.outcome === 'scrubbed') return `scrubbed ${base(r.file)}${r.edits ? ` (${plural(r.edits, 'edit')})` : ''}`
   if (r.outcome === 'flagged') return `flagged ${base(r.file)}${r.reason ? ` (${r.reason})` : ''}`
-  if (r.outcome === 'unchecked') return `not checked ${base(r.file)} (OpenRouter isn't responding)`
+  if (r.outcome === 'unchecked') return `not checked ${base(r.file)} (Jev isn't responding)`
   return undefined
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "md-scrub",
-  "version": "0.2.7",
+  "version": "0.2.9",
   "description": "A Claude Code plugin that enforces what Claude writes in Markdown.",
   "author": {
     "name": "macp-sh",
@@ -17,7 +17,13 @@
     "openrouter_api_key": {
       "type": "string",
       "title": "OpenRouter API key",
-      "description": "For the Jev classifier, which checks Markdown against your topics. Get one at openrouter.ai/keys; checks cost a fraction of a cent per file. md-scrub stays off until you add one.",
+      "description": "For the Jev classifier, which checks Markdown against your topics. Get one at openrouter.ai/keys; checks cost a fraction of a cent per file. You need this or a TypeSafe key; md-scrub stays off until you add one.",
+      "sensitive": true
+    },
+    "typesafe_api_key": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "Reaches Jev directly from TypeSafe, its maker, instead of through OpenRouter. Get one at console.typesafe.ai/keys. If both keys are set, this one is used.",
       "sensitive": true
     }
   }

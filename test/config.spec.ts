@@ -1,5 +1,5 @@
 // Topics, settings and exclusions: what md-scrub keeps out, and where (built in, user, project).
-import { test, expect, describe, beforeEach } from "bun:test";
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, cpSync } from "node:fs";
 import { join } from "node:path";
 import { loadScrubConfig, jevQuestions, rule, ScrubConfigError, MAX_QUESTION_CHARS } from "../src/scrub.ts";
@@ -104,6 +104,43 @@ describe("settings in .claude/md-scrub/config.json", () => {
 
 describe("validation", () => {
   const load = (opts: Parameters<typeof project>[0]) => loadScrubConfig(project(opts).file);
+
+  describe("a topic's own Jev settings", () => {
+    // The model ID is checked against the provider in use, here OpenRouter.
+    beforeEach(() => { process.env.OPENROUTER_API_KEY = "or"; process.env.TYPESAFE_API_KEY = ""; });
+    afterEach(() => { process.env.OPENROUTER_API_KEY = ""; process.env.TYPESAFE_API_KEY = ""; });
+    const withJev = (jev: unknown) => load({ topics: { secrets: { ...secrets, jev } } });
+
+    test("are accepted in either form, and its thresholds apply to it alone", () => {
+      const c = withJev({ model: "typesafe/jev-1.14", flag: 0.3 });
+      expect(c.errors).toEqual([]);
+      expect(c.topics.find((t) => t.id === "secrets")!.jev).toEqual({ model: "typesafe/jev-1.14", flag: 0.3 });
+      expect(withJev({ model: { typesafe: "jev-1.14.0", openrouter: "typesafe/jev-1.14" } }).errors).toEqual([]);
+      expect(c.thresholds).toEqual({ flag: 0.4, mostly: 0.5 });
+    });
+
+    test("that don't fit turn off only that topic, saying why", () => {
+      const cases: [unknown, string][] = [
+        [{ model: "jev-1.14.0" }, '"jev.model" jev-1.14.0 is a TypeSafe ID, but md-scrub is using OpenRouter'],
+        [{ model: "gpt-5" }, "neither a TypeSafe ID (jev-…) nor an OpenRouter ID (typesafe/…)"],
+        [{ model: { typesafe: "jev-1.14.0" } }, '"jev.model" gives no OpenRouter ID, and md-scrub is using OpenRouter'],
+        [{ model: { openrouter: "jev-1.14.0" } }, '"jev.model.openrouter" must be an OpenRouter ID'],
+        [{ flag: 2 }, '"jev.flag" must be a number from 0 to 1'],
+        ["fast", '"jev" must be an object'],
+      ];
+      for (const [jev, message] of cases) {
+        const c = withJev(jev);
+        expect(c.topics.map((t) => t.id), message).toEqual(["third-party-terms"]);
+        expect(c.errors.join("\n"), message).toContain(message);
+      }
+    });
+
+    test("with TypeSafe in use, a TypeSafe ID fits and an OpenRouter one doesn't", () => {
+      process.env.TYPESAFE_API_KEY = "ts";
+      expect(withJev({ model: "jev-1.14.0" }).errors).toEqual([]);
+      expect(withJev({ model: "typesafe/jev-1.14" }).errors.join("\n")).toContain("is an OpenRouter ID, but md-scrub is using TypeSafe");
+    });
+  });
 
   test("a broken topic file turns off only that topic, naming the problem", () => {
     const cases: [Parameters<typeof project>[0], string][] = [

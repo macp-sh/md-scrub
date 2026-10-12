@@ -1,5 +1,5 @@
-// Preloaded into hook processes in tests (bun --preload), so no test reaches OpenRouter. FAKE_JEV picks
-// how Jev behaves:
+// Preloaded into hook processes in tests (bun --preload), so no test reaches OpenRouter or TypeSafe.
+// FAKE_JEV picks how Jev behaves:
 //   score    answers from markers. For the fixture and shipped topics: LICENSING, "licensed under",
 //            "(MIT)" or © flags a chunk; MOSTLY flags it and also marks it as mostly the topic. Any
 //            other topic is flagged only by its id in capitals (SECRETS for secrets).
@@ -10,12 +10,12 @@ const realFetch = globalThis.fetch;
 
 globalThis.fetch = (async (input: any, init?: any) => {
   const url = String(input instanceof Request ? input.url : input);
-  if (!url.startsWith("https://openrouter.ai/")) return realFetch(input, init);
+  if (!url.startsWith("https://openrouter.ai/") && !url.startsWith("https://api.typesafe.ai/")) return realFetch(input, init);
   const mode = process.env.FAKE_JEV;
   if (mode === "down") throw new TypeError("Unable to connect");
   if (mode === "error") return Response.json({ error: { message: "upstream failed" } }, { status: 500 });
   if (mode === "missing") return Response.json({ model: "fake-jev", answers: {}, usage: { cost: 0 } });
-  if (mode !== "score") throw new Error("set FAKE_JEV whenever a test gives the hooks an OpenRouter key");
+  if (mode !== "score") throw new Error("set FAKE_JEV whenever a test gives the hooks a Jev key");
   const body = JSON.parse(init.body);
   const chunk: string = body.state.chunk;
   const answers: Record<string, { noul: number }> = {};

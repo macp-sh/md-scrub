@@ -10,7 +10,8 @@
 // "add" append, and anything it leaves out is inherited.
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, basename, relative, isAbsolute } from "node:path";
-import { ROOT, USER_DIR, project } from "./config.ts";
+import { ROOT, USER_DIR, project, jevProvider } from "./config.ts";
+import { jevError, type JevOverride, type ProviderId } from "./jev-model.ts";
 
 type Lists = { examples?: { is?: string[]; isNot?: string[] }; mostly?: { is?: string[]; isNot?: string[] }; keywords?: Keyword[] };
 type Keyword = { label: string; pattern: string; flags?: string };
@@ -24,6 +25,7 @@ export type TopicSpec = {
   examples: { is: string[]; isNot: string[] };
   mostly?: { description?: string; is?: string[]; isNot?: string[] };
   keywords?: Keyword[];
+  jev?: JevOverride; // this topic's own model and thresholds (src/jev-model.ts)
   source: string; // the last file that set or adjusted it
 };
 
@@ -62,6 +64,9 @@ function applyTopicFile(base: Partial<TopicSpec> | undefined, file: any, path: s
   const merged: any = { ...structuredClone(base ?? {}), ...structuredClone(set), id, source: path };
   if (set.examples) merged.examples = { ...(base?.examples ?? {}), ...(set.examples as object) };
   if (set.mostly) merged.mostly = { ...(base?.mostly ?? {}), ...(set.mostly as object) };
+  // A later layer's `jev` adjusts the earlier one's fields; anything but an object is left for validateTopic to report.
+  const isObject = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (isObject(set.jev) && isObject(base?.jev)) merged.jev = { ...base!.jev, ...(set.jev as object) };
   if (add !== undefined) {
     if (typeof add !== "object" || add === null) throw new ScrubConfigError(`${path}: "add" must be an object`);
     const append = (target: any, key: string, more: unknown, field: string) => {
@@ -80,8 +85,10 @@ function applyTopicFile(base: Partial<TopicSpec> | undefined, file: any, path: s
   return merged;
 }
 
-function validateTopic(t: any): Topic {
+function validateTopic(t: any, provider: ProviderId | undefined): Topic {
   const at = t.source;
+  const jev = jevError(t.jev, provider);
+  if (jev) throw new ScrubConfigError(`${at}: ${jev}`);
   for (const field of ["name", "description"]) {
     if (typeof t[field] !== "string" || !t[field].trim()) throw new ScrubConfigError(`${at}: "${field}" is required`);
   }
@@ -156,7 +163,9 @@ export function loadScrubConfig(forPath?: string): ScrubConfig {
   const found = layers(forPath);
   const topicFiles = (dir?: string) => (dir ? readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => join(dir, f)) : []);
   const files = found.flatMap((l) => [...topicFiles(l.topics), ...(l.settings ? [l.settings] : [])]);
-  const key = files.join("|");
+  // The provider in use is part of the key: a topic's model ID is checked against it.
+  const provider = jevProvider()?.id;
+  const key = `${provider}|${files.join("|")}`;
   const cached = cache.get(key);
   if (cached) return cached;
 
@@ -185,7 +194,7 @@ export function loadScrubConfig(forPath?: string): ScrubConfig {
     for (const t of specs.values()) {
       if (broken.has(t.id!) || state.switched.get(t.id!) === false) continue;
       try {
-        topics.push(validateTopic(t));
+        topics.push(validateTopic(t, provider));
       } catch (e) {
         if (!(e instanceof ScrubConfigError)) throw e;
         broken.set(t.id!, e.message);
@@ -204,6 +213,12 @@ export function loadScrubConfig(forPath?: string): ScrubConfig {
   cache.set(key, config);
   return config;
 }
+
+/** A topic's thresholds: its own `jev.flag` and `jev.mostly`, else the settings'. */
+export const thresholdsFor = (t: Topic, config: Pick<ScrubConfig, "thresholds">) => ({
+  flag: t.jev?.flag ?? config.thresholds.flag,
+  mostly: t.jev?.mostly ?? config.thresholds.mostly,
+});
 
 // ---------- what the config generates ----------
 
