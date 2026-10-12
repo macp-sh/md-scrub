@@ -2,7 +2,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
   withTopicSetting, topicSetting, effective, patterns, withPattern, logActions, isPaused, header, isExcluded,
-  projectLog, logDetail, inherited, shown, flipped, providerName, ownSettings, parseExclude, excludeRows, EXCLUDE,
+  projectLog, logDetail, inherited, shown, flipped, providerName, ownSettings, parseExclude, excludeRows,
 } from '../hooks/panel'
 
 const HOME = '/home/test'
@@ -232,15 +232,35 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: /add an OpenRouter or TypeSafe key/ })).toBeDefined()
   })
 
-  test(`${surface}: a closes the panel and starts /md-scrub exclude in the prompt box`, async ($, on) => {
-    fakeFiles(on, project(), new Map())
-    const done: string[] = []
-    on('ui.close', (_$, e) => { done.push(`close ${e.id}`); return { value: undefined } })
-    on('prompt.fill', (_$, e) => { done.push(`fill ${e.text}`); return { isFilled: true, text: e.text, cursor: e.text.length } })
+  test(`${surface}: a opens a field in the panel; a match fills it, and Enter adds what it holds`, async ($, on) => {
+    const writes = new Map<string, string>()
+    fakeFiles(on, project({ [`${PROJECT}/exclusions`]: '# ours\nlegal/\n' }), writes)
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     await ui.press({ key: 'tab:exclusions' })
     await ui.press({ key: 'addx' })
-    expect(done).toEqual(['close md-scrub', `fill ${EXCLUDE}`])
+    expect(await ui.find({ key: 'add' })).toBeDefined()
+    await ui.input({ key: 'add', text: 'do', kind: 'change' })
+    expect((await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => k?.startsWith('m:'))).toEqual(['m:docs/'])
+    // Taking a folder fills the field with it and lists what's inside; nothing is added yet.
+    await ui.press({ key: 'm:docs/' })
+    expect((await ui.find({ key: 'add' }))?.props.value).toBe('docs/')
+    expect(await ui.find({ key: 'm:docs/maps.md' })).toBeDefined()
+    expect(writes.size).toBe(0)
+    await ui.input({ key: 'add', text: 'docs/' })
+    expect(writes.get(`${PROJECT}/exclusions`)).toBe('# ours\nlegal/\ndocs/\n')
+  })
+
+  test(`${surface}: the field adds to User once switched`, async ($, on) => {
+    const writes = new Map<string, string>()
+    fakeFiles(on, project(), writes)
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'tab:exclusions' })
+    await ui.press({ key: 'addx' })
+    expect(await ui.find({ text: 'acme-app' })).toBeDefined()
+    await ui.press({ key: 'target' })
+    await ui.input({ key: 'add', text: 'notes/' })
+    expect(writes.get(`${USER}/exclusions`)).toBe('notes/\n')
+    expect(writes.has(`${PROJECT}/exclusions`)).toBe(false)
   })
 
   test(`${surface}: the log lists scrubbed and flagged files, and e excludes one`, async ($, on) => {
