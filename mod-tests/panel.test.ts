@@ -2,6 +2,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
   withTopicSetting, topicSetting, cycle, effective, patterns, withPattern, logActions, isPaused, header, isExcluded,
+  projectLog, logDetail,
 } from '../hooks/panel'
 
 const HOME = '/home/test'
@@ -35,6 +36,7 @@ test('exclusion files keep comments and order', () => {
   expect(withPattern(text, 'legal/', true)).toBe(text)
   expect(withPattern(text, 'legal/', false)).toBe('# saved docs\n')
   expect(withPattern('', 'a.md', true)).toBe('a.md\n')
+  expect(withPattern('legal/\n', 'legal/', false)).toBe('')
   expect(isExcluded('docs/legal/terms.md', ['legal/'])).toBe(true)
   expect(isExcluded('notes/a.draft.md', ['*.draft.md'])).toBe(true)
   expect(isExcluded('docs/maps.md', ['docs/'])).toBe(true)
@@ -50,6 +52,29 @@ test('the log shows actions newest first, without clean ones or other events', (
     { t: '2026-10-11T03:03:00Z', event: 'action', action: 'flagged', file: `${ROOT}/c.md` },
   ].map(e => JSON.stringify(e)).join('\n') + '\nnot json\n'
   expect(logActions(text).map(e => e.action)).toEqual(['flagged', 'scrubbed'])
+})
+
+test('the log keeps this project\'s rows, under either spelling of its root, and counts the rest', () => {
+  const rows = [
+    { t: '', event: 'action', action: 'scrubbed', file: '/private/tmp/acme/docs/a.md' },
+    { t: '', event: 'action', action: 'flagged', file: '/tmp/acme/b.md' },
+    { t: '', event: 'action', action: 'flagged', file: '/tmp/acme-other/c.md' },
+    { t: '', event: 'action', action: 'flagged', file: '/elsewhere/d.md' },
+  ]
+  const { rows: here, others } = projectLog(rows, ['/tmp/acme', '/private/tmp/acme'])
+  expect(here.map(r => r.file)).toEqual(['docs/a.md', 'b.md'])
+  expect(others).toBe(2)
+  expect(projectLog(rows, ['/tmp/acme'], 1).rows.length).toBe(1)
+})
+
+test('a log row says what happened in one line', () => {
+  const name = (id: string) => ({ terms: 'Third-party legal terms' } as Record<string, string>)[id] ?? id
+  expect(logDetail({ t: '', event: 'action', action: 'scrubbed', topics: ['terms'], edits: 2 }, name)).toBe('Third-party legal terms · 2 edits')
+  expect(logDetail({ t: '', event: 'action', action: 'flagged', topics: ['terms'], reason: 'mostly', share: 96 }, name))
+    .toBe('Mostly Third-party legal terms (96%); saved as written for you to review')
+  expect(logDetail({ t: '', event: 'action', action: 'flagged', topics: ['terms'], reason: 'clean-up failed' }, name))
+    .toBe('Third-party legal terms; the clean-up failed, so it was saved as written')
+  expect(logDetail({ t: '', event: 'action', action: 'unchecked', reason: 'timeout' }, name)).toBe('Not checked: timeout')
 })
 
 test('paused only while the latest Jev or action entry is a recent unchecked write', () => {
@@ -73,7 +98,7 @@ test('the header comes from the start-up check, for this project only', () => {
 // ---------- the pane, against a small in-memory file system ----------
 
 function fakeFiles(on: On, files: Map<string, string>, writes: Map<string, string>) {
-  mock.clock(on)
+  const clock = mock.clock(on)
   on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? HOME : undefined }))
   on('session.root', () => ({ value: ROOT }))
   // The plugin's own defaults are found by their tail, wherever the test loads the plugin from.
@@ -84,6 +109,11 @@ function fakeFiles(on: On, files: Map<string, string>, writes: Map<string, strin
     return { value: text }
   })
   on('fs.exists', (_$, e) => ({ value: find(e.path) !== undefined }))
+  on('fs.stat', (_$, e) => {
+    const text = find(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: { kind: 'file' as const, size: text.length, mtimeMs: 0, isLink: false } }
+  })
   on('fs.write', (_$, e) => {
     files.set(e.path, e.text)
     writes.set(e.path, e.text)
@@ -103,6 +133,7 @@ function fakeFiles(on: On, files: Map<string, string>, writes: Map<string, strin
     }
     return { value: [...names].map(([name, kind]) => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })) }
   })
+  return clock
 }
 
 const PANE_PROPS = {
@@ -133,11 +164,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: 'Third-party legal terms' })).toBeDefined()
     expect(await ui.find({ text: 'acme-app' })).toBeDefined()
 
-    // Not set for the user: pressing sets it on.
-    await ui.press({ key: 't:third-party-terms:user' })
+    // Not set for the user: u (on the focused row, the first) sets it on.
+    await ui.press({ key: 'user' })
     expect(JSON.parse(writes.get(`${USER}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: true } } })
-    // Off for the project: pressing clears it, removing the key.
-    await ui.press({ key: 't:third-party-terms:project' })
+    // Off for the project: Enter on the row clears it, removing the key.
+    await ui.press({ key: 't:third-party-terms' })
     expect(JSON.parse(writes.get(`${PROJECT}/config.json`)!)).toEqual({})
   })
 
@@ -175,6 +206,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     await ui.press({ key: 'tab:log' })
     expect(await ui.find({ text: /vendor-terms\.md/ })).toBeDefined()
+    expect(await ui.find({ text: /in other projects/ })).toBeUndefined()
     expect(await ui.find({ text: /README\.md/ })).toBeUndefined()
     await ui.press({ key: 'l:1' })
     await ui.press({ key: 'e:1' })
@@ -187,9 +219,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     fakeFiles(on, files, new Map())
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     expect(await ui.find({ text: /1 topic has an error/ })).toBeDefined()
-    expect(await ui.find({ text: /on\/off\/not set/ })).toBeDefined()
+    expect(await ui.find({ text: /cycle acme-app/ })).toBeDefined()
+    expect(await ui.find({ text: /cycle User/ })).toBeDefined()
     await ui.press({ key: 'tab:exclusions' })
-    expect(await ui.find({ text: /exclude\/not/ })).toBeDefined()
+    expect(await ui.find({ text: /add an exclusion/ })).toBeDefined()
+    expect(await ui.find({ text: /cycle User/ })).toBeUndefined()
   })
 
   test(`${surface}: a config file that isn't valid JSON is reported in the panel, not overwritten`, async ($, on) => {
@@ -197,12 +231,51 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const writes = new Map<string, string>()
     fakeFiles(on, files, writes)
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
-    await ui.press({ key: 't:third-party-terms:user' })
+    await ui.press({ key: 'user' })
     expect(writes.size).toBe(0)
     expect(await ui.find({ text: /isn't valid JSON; fix it first/ })).toBeDefined()
     // Moving to another screen clears it.
     await ui.press({ key: 'tab:log' })
     expect(await ui.find({ text: /isn't valid JSON/ })).toBeUndefined()
+  })
+
+  test(`${surface}: an exclusion row is one stop: Enter toggles the project, u the user`, async ($, on) => {
+    const files = project({ [`${PROJECT}/exclusions`]: 'legal/\n' })
+    const writes = new Map<string, string>()
+    fakeFiles(on, files, writes)
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'tab:exclusions' })
+    await ui.press({ key: 'user' })
+    expect(writes.get(`${USER}/exclusions`)).toBe('legal/\n')
+    await ui.press({ key: 'x:legal/' })
+    expect(writes.get(`${PROJECT}/exclusions`)).toBe('')
+  })
+
+  test(`${surface}: the log shows only this project, says what a row means and counts the rest`, async ($, on) => {
+    const log = [
+      { t: '2026-10-11T03:00:00Z', event: 'action', action: 'flagged', file: `${ROOT}/vendor-terms.md`, topics: ['third-party-terms'], reason: 'mostly', share: 96 },
+      { t: '2026-10-11T03:01:00Z', event: 'action', action: 'scrubbed', file: '/elsewhere/notes.md', topics: ['third-party-terms'], edits: 1 },
+    ].map(e => JSON.stringify(e)).join('\n') + '\n'
+    fakeFiles(on, project({ [`${STATE}/log.jsonl`]: log }), new Map())
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'tab:log' })
+    expect(await ui.find({ text: /vendor-terms\.md/ })).toBeDefined()
+    expect(await ui.find({ text: /notes\.md/ })).toBeUndefined()
+    expect(await ui.find({ text: /1 more row in other projects/ })).toBeDefined()
+    expect(await ui.find({ text: /Mostly Third-party legal terms \(96%\)/ })).toBeDefined()
+  })
+
+  test(`${surface}: an open panel shows new log rows without a key press`, async ($, on) => {
+    const line = (file: string) => JSON.stringify({ t: '2026-10-11T03:00:00Z', event: 'action', action: 'scrubbed', file: `${ROOT}/${file}` }) + '\n'
+    const files = project({ [`${STATE}/log.jsonl`]: line('first.md') })
+    const clock = fakeFiles(on, files, new Map())
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'tab:log' })
+    await clock.advance(2000)
+    files.set(`${STATE}/log.jsonl`, line('first.md') + line('second.md'))
+    expect(await ui.find({ text: /second\.md/ })).toBeUndefined()
+    await clock.advance(2000)
+    expect(await ui.find({ text: /second\.md/ })).toBeDefined()
   })
 
   test(`${surface}: adding an exclusion shows the pattern hint and where it goes`, async ($, on) => {

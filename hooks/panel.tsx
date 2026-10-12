@@ -22,7 +22,7 @@ export type Topic = {
   error?: string
 }
 export type Settings = { user: Record<string, unknown>; project: Record<string, unknown> }
-export type LogEntry = { t: string; event: string; action?: string; file?: string; reason?: string }
+export type LogEntry = { t: string; event: string; action?: string; file?: string; reason?: string; topics?: string[]; edits?: number; share?: number }
 export type Header = { state: 'on' | 'off' | 'paused'; reason?: string; warning?: string }
 
 // ---------- pure helpers (tested) ----------
@@ -69,7 +69,10 @@ export function withPattern(text: string, pattern: string, present: boolean): st
   const lines = text ? text.replace(/\n$/, '').split('\n') : []
   const has = lines.some(l => l.trim() === pattern)
   if (present && !has) lines.push(pattern)
-  if (!present) return lines.filter(l => l.trim() !== pattern).join('\n') + (lines.length ? '\n' : '')
+  if (!present) {
+    const kept = lines.filter(l => l.trim() !== pattern)
+    return kept.length ? kept.join('\n') + '\n' : ''
+  }
   return lines.join('\n') + '\n'
 }
 
@@ -87,6 +90,31 @@ export function logActions(text: string, limit = 50): LogEntry[] {
     if (out.length >= limit) break
   }
   return out
+}
+
+/** This project's log rows, paths made relative, and how many rows belong to other projects. The
+ *  log is shared by every project; `roots` is the project root as given and as resolved, since a hook
+ *  may record either (`/tmp` and `/private/tmp` on macOS). */
+export function projectLog(entries: LogEntry[], roots: string[], limit = 50): { rows: LogEntry[]; others: number } {
+  const rows: LogEntry[] = []
+  let others = 0
+  for (const e of entries) {
+    const root = roots.find(r => e.file?.startsWith(r + '/'))
+    if (!root) { others++; continue }
+    if (rows.length < limit) rows.push({ ...e, file: e.file!.slice(root.length + 1) })
+  }
+  return { rows, others }
+}
+
+/** One line on what a log row means, topics named by `name`. */
+export function logDetail(e: LogEntry, name: (id: string) => string): string {
+  const topics = (e.topics ?? []).map(name).join(', ')
+  if (e.action === 'scrubbed') return `${topics || 'Scrubbed'}${e.edits ? ` · ${e.edits} ${e.edits === 1 ? 'edit' : 'edits'}` : ''}`
+  if (e.action === 'flagged' && e.reason === 'mostly') return `Mostly ${topics || 'unwanted'}${e.share ? ` (${e.share}%)` : ''}; saved as written for you to review`
+  if (e.action === 'flagged' && e.reason === 'clean-up failed') return `${topics ? topics + '; ' : ''}the clean-up failed, so it was saved as written`
+  if (e.action === 'flagged') return `${topics ? topics + '; ' : ''}saved as written for you to review`
+  if (e.action === 'unchecked') return `Not checked${e.reason ? `: ${e.reason}` : ''}`
+  return e.action ?? ''
 }
 
 /** Paused when the most recent Jev or action entry, within ten minutes, is an unchecked write. */
@@ -130,7 +158,7 @@ const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'vendor'
 // ---------- loading ----------
 
 type Paths = { home: string; root: string; user: string; project: string; builtIn: string; state: string; projectName: string }
-type Data = { topics: Topic[]; settings: Settings; exclusions: Record<Scope, string[]>; log: LogEntry[]; header: Header; logError?: string }
+type Data = { topics: Topic[]; settings: Settings; exclusions: Record<Scope, string[]>; log: LogEntry[]; otherLog: number; header: Header; logError?: string }
 
 async function paths($: EngineInterface): Promise<Paths> {
   const home = (await $.env.get('HOME')) ?? ''
@@ -186,11 +214,14 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
   }
   let setup: { cwd?: string | null; line?: string | null } | undefined
   try { setup = parseJson(await $.fs.read(`${p.state}/setup.json`)) as typeof setup } catch {}
+  const real = await $.fs.stat(p.root, { resolve: true }).then(s => s.realPath).catch(() => undefined)
+  const log = projectLog(logActions(logText, Infinity), [...new Set([p.root, ...(real ? [real] : [])])])
   return {
     topics: [...byId.values()],
     settings,
     exclusions,
-    log: logActions(logText),
+    log: log.rows,
+    otherLog: log.others,
     header: header(setup, p.root, isPaused(logText, await $.clock.now())),
     logError,
   }
@@ -205,6 +236,9 @@ let choice: { row: number; options: string[] } | undefined
 let cache: { p: Paths; data: Data } | undefined
 // A problem with the last action. Shown in the panel, since the pane holds toasts while it's open.
 let message: string | undefined
+// The open panel's log watch, and the log's size and time when it last looked.
+let ticker: { cancel: () => void } | undefined
+let logStamp = ''
 
 // Every draw reads the files afresh (they're small), so edits made elsewhere show too; actions
 // use what the last draw read.
@@ -284,13 +318,28 @@ const ORANGE = '#d97757'
 const SELECTED = '#3a3835'
 const TABS = [['topics', 'Topics'], ['exclusions', 'Exclusions'], ['log', 'Log']] as const
 const TAB_GAP = 3
+// How often an open panel looks for new log rows.
+const LOG_POLL_MS = 2000
 const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const glyph = (v: boolean | undefined) => (v === undefined ? Glyph.unset : v ? Glyph.on : Glyph.off)
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
-// The row the focus is on, from the key of the Button holding it.
-const focusedPattern = () => (focused?.startsWith('x:') ? focused.slice(2, focused.lastIndexOf(':')) : undefined)
+// The row the focus is on, from the key of the Button holding it. Each row is one stop for the arrows,
+// which walk a site's buttons in order: Enter acts on the project cell and `u` on the User cell.
+const focusedPattern = () => (focused?.startsWith('x:') ? focused.slice(2) : undefined)
 const focusedLog = () => (focused?.startsWith('l:') ? Number(focused.slice(2)) : focused?.startsWith('e:') ? choice?.row : undefined)
+
+// While the panel is open, redraws when the log changes, so new rows show without a key press.
+function watchLog($: EngineInterface) {
+  ticker = $.clock.every(LOG_POLL_MS, async () => {
+    if (!cache) return
+    const s = await $.fs.stat(`${cache.p.state}/log.jsonl`).catch(() => undefined)
+    const stamp = s ? `${s.size}:${s.mtimeMs}` : ''
+    if (stamp === logStamp) return
+    logStamp = stamp
+    refresh($)
+  })
+}
 
 // status.ts's session.start hook registers the /md-scrub command (a module takes one unmatched hook per
 // event, and $ can't be passed across files); `register` below does it when this module loads alone.
@@ -316,15 +365,17 @@ export function registerPanel(on: On) {
     const Input = 'Input' in els ? els.Input : undefined // mobile draws no text field
     const p = await paths($)
     cache = { p, data: await load($, p) }
+    if (!ticker) watchLog($)
     const { data } = cache
     const hd = data.header // not `h`: that's the JSX factory
     const width = Math.max(40, e.props.bodyColumns)
     // The scope columns start just after the longest name.
-    const longest = Math.max(12, ...data.topics.map(t => t.name.length), ...data.exclusions.user.map(x => x.length), ...data.exclusions.project.map(x => x.length))
+    const longest = Math.max(12, ...data.topics.map(t => t.name.length + 2), ...data.exclusions.user.map(x => x.length), ...data.exclusions.project.map(x => x.length))
     const nameWidth = Math.min(longest + 5, 44, width - 22)
     const scopeWidth = (s: Scope) => (s === 'user' ? 9 : Math.max(9, p.projectName.length + 2))
     const rule = <Text dimColor>{'─'.repeat(width)}</Text>
     const broken = data.topics.filter(t => t.error).length
+    const topicName = (id: string) => sentence(data.topics.find(t => t.id === id)?.name ?? id)
 
     const head = (
       <Box flexDirection="row">
@@ -339,7 +390,7 @@ export function registerPanel(on: On) {
     // Each tab is drawn `1: Topics`; the bar beneath the current one spans the same cells.
     const tabWidth = (label: string) => label.length + 3
     const tabs = (
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
         <Box flexDirection="row" gap={TAB_GAP}>
           {TABS.map(([t, label], i) => (
             <Box width={tabWidth(label)}>
@@ -368,6 +419,9 @@ export function registerPanel(on: On) {
     const row = (key: string, selected: boolean, children: RenderChildren) => (
       <Box key={key} flexDirection="row" backgroundColor={selected ? SELECTED : undefined} hover={{ backgroundColor: SELECTED }}>{children}</Box>
     )
+    const cell = (s: Scope, text: string, dim: boolean, colour?: string) => (
+      <Box width={scopeWidth(s)} justifyContent="center"><Text dimColor={dim} color={colour}>{text}</Text></Box>
+    )
 
     let body
     // The key legend: what the arrows and Enter do here, then this tab's own keys as buttons.
@@ -375,23 +429,25 @@ export function registerPanel(on: On) {
     const actions: RenderElement[] = []
     if (tab === 'topics') {
       const sel = selectedTopic(data)
+      const userCycle = () => { if (sel && !sel.error) void setTopic($, sel.id, 'user') }
       body = (
         <Box flexDirection="column" flexGrow={1}>
           {columns}
           {data.topics.map((t, i) => {
             const active = !t.error && effective(t, data.settings)
+            const here = focused === `t:${t.id}`
             return row(`row:${t.id}`, sel?.id === t.id, <Box flexDirection="row">
               <Box width={nameWidth}>
-                <Text dimColor={!active} bold={active} wrap="truncate">{t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>} {sentence(t.name)}</Text>
+                <Button key={`t:${t.id}`} plain dimColor={!active && !here} autoFocus={i === 0 ? true : undefined}
+                  onPress={() => { if (!t.error) void setTopic($, t.id, 'project') }}>
+                  {t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>}
+                  <Text bold={active}> {sentence(t.name)}</Text>
+                </Button>
               </Box>
-              {SCOPES.map(s => (
-                <Box width={scopeWidth(s)} justifyContent="center">
-                  <Button key={`t:${t.id}:${s}`} plain dimColor={topicSetting(data.settings[s], t.id) === undefined}
-                    autoFocus={i === 0 && s === 'project' ? true : undefined}
-                    label={glyph(topicSetting(data.settings[s], t.id))}
-                    onPress={() => { if (!t.error) void setTopic($, t.id, s) }} />
-                </Box>
-              ))}
+              {SCOPES.map(s => {
+                const v = t.error ? undefined : topicSetting(data.settings[s], t.id)
+                return cell(s, glyph(v), v === undefined, v ? 'success' : undefined)
+              })}
             </Box>)
           })}
           <Box flexGrow={1} />
@@ -401,33 +457,30 @@ export function registerPanel(on: On) {
           </Box>
         </Box>
       )
-      enter = 'on/off/not set'
+      enter = `cycle ${p.projectName}`
+      actions.push(<Button key="user" plain hotkey="u" dimColor onPress={userCycle}>cycle User</Button>)
       if (sel?.file) actions.push(<Button key="open" plain hotkey="o" dimColor onPress={() => { if (sel?.file) void openFile($, sel.file) }}>open</Button>)
       if (sel?.builtIn && !sel.file) actions.push(<Button key="copy" plain hotkey="c" dimColor onPress={() => { if (sel) void copyTopic($, sel) }}>copy to edit</Button>)
     } else if (tab === 'exclusions') {
       const all = [...new Set([...data.exclusions.user, ...data.exclusions.project])]
-      const current = focusedPattern()
+      // With the focus elsewhere (a tab), the first row is the one `u` acts on.
+      const current = focusedPattern() ?? all[0]
+      const toggle = (x: string | undefined, s: Scope) => { if (x) void setPattern($, x, s, !data.exclusions[s].includes(x)) }
       const add = (pattern: string, target: Scope) => {
         adding = undefined
         if (!pattern) return refresh($)
         // The new row, focused, shows it was added.
-        void setPattern($, pattern, target, true).then(() => $.ui.focus({ requestId: PANE, key: `x:${pattern}:${target}` })).catch(() => {})
+        void setPattern($, pattern, target, true).then(() => $.ui.focus({ requestId: PANE, key: `x:${pattern}` })).catch(() => {})
       }
       body = (
         <Box flexDirection="column">
           {columns}
           {all.length === 0 && !adding ? <Text dimColor>No exclusions.</Text> : null}
           {all.map(x => row(`xrow:${x}`, !adding && current === x, <Box flexDirection="row">
-            <Box width={nameWidth}><Text wrap="truncate">{x}</Text></Box>
-            {SCOPES.map(s => {
-              const present = data.exclusions[s].includes(x)
-              return (
-                <Box width={scopeWidth(s)} justifyContent="center">
-                  <Button key={`x:${x}:${s}`} plain dimColor={!present} label={present ? Glyph.on : Glyph.unset}
-                    onPress={() => void setPattern($, x, s, !present)} />
-                </Box>
-              )
-            })}
+            <Box width={nameWidth}>
+              <Button key={`x:${x}`} plain onPress={() => toggle(x, 'project')}><Text>{x}</Text></Button>
+            </Box>
+            {SCOPES.map(s => data.exclusions[s].includes(x) ? cell(s, Glyph.on, false, 'success') : cell(s, Glyph.unset, true))}
           </Box>))}
           {adding && Input ? (
             <Box flexDirection="column" marginTop={1}>
@@ -460,23 +513,27 @@ export function registerPanel(on: On) {
           )}
         </Box>
       )
-      enter = adding ? 'add' : 'exclude/not'
+      if (adding) enter = 'add'
+      else if (all.length) {
+        enter = `toggle ${p.projectName}`
+        actions.push(<Button key="user" plain hotkey="u" dimColor onPress={() => toggle(current, 'user')}>toggle User</Button>)
+      }
     } else {
-      const current = focusedLog()
+      const current = focusedLog() ?? 0
       const pick = (i: number) => {
         const r = data.log[i]
-        if (!r) return
-        const file = relative(r.file ?? '', p.root)
+        if (!r?.file) return
         message = undefined
-        choice = { row: i, options: [file, parent(file)].filter((x): x is string => !!x) }
+        choice = { row: i, options: [r.file, parent(r.file)].filter((x): x is string => !!x) }
         $.ui.invalidate('ui.render')
       }
+      const shown = data.log[current]
       body = (
-        <Box flexDirection="column">
+        <Box flexDirection="column" flexGrow={1}>
           {data.logError ? <Text dimColor>{data.logError}</Text> : null}
-          {!data.logError && data.log.length === 0 ? <Text dimColor>Nothing scrubbed or flagged yet.</Text> : null}
+          {!data.logError && data.log.length === 0 ? <Text dimColor>Nothing scrubbed or flagged in {p.projectName} yet.</Text> : null}
           {data.log.map((r, i) => {
-            const file = relative(r.file ?? '', p.root)
+            const file = r.file ?? ''
             const excluded = isExcluded(file, [...data.exclusions.user, ...data.exclusions.project])
             const d = new Date(r.t)
             const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
@@ -487,7 +544,8 @@ export function registerPanel(on: On) {
                   <Box width={7}><Text dimColor>{time}</Text></Box>
                   <Box width={11}><Text color={colour}>{r.action ?? ''}</Text></Box>
                   <Button key={`l:${i}`} plain onPress={() => pick(i)}>
-                    <Text dimColor>{folderOf(tilde(file, p.home))}</Text>{nameOf(file)}
+                    {/* At full strength under the focus, so the inverted file reads as one block. */}
+                    <Text dimColor={focused !== `l:${i}`}>{folderOf(file)}</Text>{nameOf(file)}
                   </Button>
                   {excluded ? <Text dimColor> · excluded</Text> : null}
                 </Box>)}
@@ -504,14 +562,16 @@ export function registerPanel(on: On) {
               </Box>
             )
           })}
+          {data.otherLog ? <Text dimColor>{plural(data.otherLog, 'more row', 'more rows')} in other projects</Text> : null}
+          <Box flexGrow={1} />
+          {shown ? <Box marginTop={1}><Text dimColor wrap="truncate-end">{logDetail(shown, topicName)}</Text></Box> : null}
         </Box>
       )
-      enter = 'exclude'
-      actions.push(<Button key="exclude" plain hotkey="e" dimColor onPress={() => pick(focusedLog() ?? 0)}>exclude</Button>)
+      if (data.log.length) actions.push(<Button key="exclude" plain hotkey="e" dimColor onPress={() => pick(current)}>exclude</Button>)
     }
 
     const hint = (k: string, d: string) => <Text>{k}<Text dimColor> {d}</Text></Text>
-    const legend = [hint('↑↓', 'move'), hint('enter', enter), ...actions, hint('1-3', 'screen'), hint('esc', 'close')]
+    const legend = [hint('↑↓', 'move'), ...(enter ? [hint('enter', enter)] : []), ...actions, hint('1-3', 'screen'), hint('esc', 'close')]
     const keys = (
       <Box flexDirection="row" flexWrap="wrap">
         {legend.flatMap((item, i) => (i ? [<Text dimColor> · </Text>, item] : [item]))}
@@ -525,7 +585,7 @@ export function registerPanel(on: On) {
         {tabs}
         <Box flexDirection="column" marginTop={1} minHeight={BODY_ROWS}>{body}</Box>
         {message ? <Text color="error">{message}</Text> : null}
-        <Box marginTop={1}>{rule}</Box>
+        {rule}
         {keys}
       </Box>
     )
@@ -533,6 +593,7 @@ export function registerPanel(on: On) {
 
   on('ui.close', { id: PANE }, async ($, e, next) => {
     adding = undefined; choice = undefined; cache = undefined; message = undefined
+    ticker?.cancel(); ticker = undefined; logStamp = ''
     return next(e)
   }).catch(($, e, next) => next(e))
 }
