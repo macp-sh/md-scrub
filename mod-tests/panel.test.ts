@@ -143,6 +143,7 @@ const PANE_PROPS = {
 
 function project(extra: Record<string, string> = {}) {
   return new Map<string, string>([
+    ['*/.claude-plugin/plugin.json', JSON.stringify({ name: 'md-scrub', version: '9.8.7' })],
     ['*/defaults/config.json', JSON.stringify({ enabled: true, topics: { 'third-party-terms': { enabled: true } } })],
     ['*/defaults/topics/third-party-terms.json', JSON.stringify({ name: 'third-party legal terms', description: 'What other companies say you can or cannot do.' })],
     [`${PROJECT}/config.json`, JSON.stringify({ topics: { 'third-party-terms': { enabled: false } } })],
@@ -163,12 +164,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ text: /^md-scrub$/ })) ?? (await ui.find({ text: 'md-scrub' }))).toBeDefined()
     expect(await ui.find({ text: 'Third-party legal terms' })).toBeDefined()
     expect(await ui.find({ text: 'acme-app' })).toBeDefined()
+    expect(await ui.find({ text: 'v9.8.7' })).toBeDefined()
 
-    // Not set for the user: u (on the focused row, the first) sets it on.
-    await ui.press({ key: 'user' })
+    // Not set for the user: its cell sets it on.
+    await ui.press({ key: 'user@t:third-party-terms' })
     expect(JSON.parse(writes.get(`${USER}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: true } } })
-    // Off for the project: Enter on the row clears it, removing the key.
-    await ui.press({ key: 't:third-party-terms' })
+    // Off for the project: its cell clears it, removing the key.
+    await ui.press({ key: 'project@t:third-party-terms' })
     expect(JSON.parse(writes.get(`${PROJECT}/config.json`)!)).toEqual({})
   })
 
@@ -219,11 +221,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     fakeFiles(on, files, new Map())
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     expect(await ui.find({ text: /1 topic has an error/ })).toBeDefined()
-    expect(await ui.find({ text: /cycle acme-app/ })).toBeDefined()
-    expect(await ui.find({ text: /cycle User/ })).toBeDefined()
+    expect(await ui.find({ text: /cycle/ })).toBeDefined()
+    // The cells are the stops, so there is no separate key for the User column.
+    expect(await ui.find({ key: 'user' })).toBeUndefined()
     await ui.press({ key: 'tab:exclusions' })
-    expect(await ui.find({ text: /add an exclusion/ })).toBeDefined()
-    expect(await ui.find({ text: /cycle User/ })).toBeUndefined()
+    expect(await ui.find({ text: /path exclusion/ })).toBeDefined()
+    expect(await ui.find({ text: /cycle/ })).toBeUndefined()
   })
 
   test(`${surface}: a config file that isn't valid JSON is reported in the panel, not overwritten`, async ($, on) => {
@@ -231,7 +234,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const writes = new Map<string, string>()
     fakeFiles(on, files, writes)
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
-    await ui.press({ key: 'user' })
+    await ui.press({ key: 'user@t:third-party-terms' })
     expect(writes.size).toBe(0)
     expect(await ui.find({ text: /isn't valid JSON; fix it first/ })).toBeDefined()
     // Moving to another screen clears it.
@@ -239,15 +242,19 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: /isn't valid JSON/ })).toBeUndefined()
   })
 
-  test(`${surface}: an exclusion row is one stop: Enter toggles the project, u the user`, async ($, on) => {
+  test(`${surface}: each cell is a stop: Enter or a click changes its own scope`, async ($, on) => {
     const files = project({ [`${PROJECT}/exclusions`]: 'legal/\n' })
     const writes = new Map<string, string>()
     fakeFiles(on, files, writes)
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    await ui.press({ key: 'user@t:third-party-terms' })
+    expect(JSON.parse(writes.get(`${USER}/config.json`)!)).toEqual({ topics: { 'third-party-terms': { enabled: true } } })
+    await ui.press({ key: 'project@t:third-party-terms' })
+    expect(JSON.parse(writes.get(`${PROJECT}/config.json`)!)).toEqual({})
     await ui.press({ key: 'tab:exclusions' })
-    await ui.press({ key: 'user' })
+    await ui.press({ key: 'user@x:legal/' })
     expect(writes.get(`${USER}/exclusions`)).toBe('legal/\n')
-    await ui.press({ key: 'x:legal/' })
+    await ui.press({ key: 'project@x:legal/' })
     expect(writes.get(`${PROJECT}/exclusions`)).toBe('')
   })
 

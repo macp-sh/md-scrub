@@ -1,6 +1,6 @@
 {
   "name": "md-scrub",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "A Claude Code plugin that enforces what Claude writes in Markdown.",
   "author": {
     "name": "macp-sh",

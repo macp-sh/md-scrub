@@ -3,12 +3,16 @@
 # Releases md-scrub: runs the tests, commits all changes with the version bump, merges to main, tags,
 # publishes a GitHub Release, points the claude-plugins marketplace at the new tag and updates the local install.
 #
-# Usage: scripts/release.sh "<release notes>" [patch|minor|major|X.Y.Z]   (default: patch)
-# The marketplace checkout defaults to ../claude-plugins; set MARKETPLACE_DIR to use another.
+# Usage: scripts/release.sh "<summary>" ["<release notes>"] [patch|minor|major|X.Y.Z]   (default: patch)
+# The summary is the commit message after `vX.Y.Z: ` and must fit in 72 characters with it; the
+# release notes default to the summary. The marketplace checkout defaults to ../claude-plugins; set
+# MARKETPLACE_DIR to use another.
 set -euo pipefail
 
-notes=${1:?usage: scripts/release.sh "<release notes>" [patch|minor|major|X.Y.Z]}
-bump=${2:-patch}
+usage='usage: scripts/release.sh "<summary>" ["<release notes>"] [patch|minor|major|X.Y.Z]'
+summary=${1:?$usage}
+notes=${2:-$summary}
+bump=${3:-patch}
 root=$(cd "$(dirname "$0")/.." && pwd)
 market=${MARKETPLACE_DIR:-$root/../claude-plugins}
 cd "$root"
@@ -26,6 +30,8 @@ version=$(bun -e '
   console.log(`${ma}.${mi}.${pa}`)
 ' "$current" "$bump")
 tag="v$version"
+subject="$tag: $summary"
+(( ${#subject} <= 72 )) || { echo "commit message is ${#subject} characters, over 72: $subject" >&2; echo "shorten the summary; put the detail in the release notes" >&2; exit 1; }
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null && { echo "$tag already exists" >&2; exit 1; }
 echo "md-scrub $current -> $version"
 
@@ -40,7 +46,7 @@ bun -e '
 ' "$version"
 branch=$(git branch --show-current)
 git add -A
-git commit -q -m "$tag: $notes"
+git commit -q -m "$tag: $summary"
 
 if [[ $branch != main ]]; then
   git push -q origin "$branch"

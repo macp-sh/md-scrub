@@ -158,7 +158,7 @@ const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'vendor'
 // ---------- loading ----------
 
 type Paths = { home: string; root: string; user: string; project: string; builtIn: string; state: string; projectName: string }
-type Data = { topics: Topic[]; settings: Settings; exclusions: Record<Scope, string[]>; log: LogEntry[]; otherLog: number; header: Header; logError?: string }
+type Data = { version?: string; topics: Topic[]; settings: Settings; exclusions: Record<Scope, string[]>; log: LogEntry[]; otherLog: number; header: Header; logError?: string }
 
 async function paths($: EngineInterface): Promise<Paths> {
   const home = (await $.env.get('HOME')) ?? ''
@@ -216,7 +216,9 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
   try { setup = parseJson(await $.fs.read(`${p.state}/setup.json`)) as typeof setup } catch {}
   const real = await $.fs.stat(p.root, { resolve: true }).then(s => s.realPath).catch(() => undefined)
   const log = projectLog(logActions(logText, Infinity), [...new Set([p.root, ...(real ? [real] : [])])])
+  const manifest = await readConfig($, `${$.plugin.root}/.claude-plugin/plugin.json`)
   return {
+    version: typeof manifest.version === 'string' ? manifest.version : undefined,
     topics: [...byId.values()],
     settings,
     exclusions,
@@ -264,7 +266,8 @@ async function suggest($: EngineInterface, root: string, query: string): Promise
 }
 
 const selectedTopic = (d: Data) => {
-  const id = focused?.startsWith('t:') ? focused.split(':')[1] : undefined
+  const row = focusedRow()
+  const id = row?.startsWith('t:') ? row.slice(2) : undefined
   return d.topics.find(t => t.id === id) ?? d.topics[0]
 }
 
@@ -310,8 +313,11 @@ async function copyTopic($: EngineInterface, t: Topic) {
 // ---------- drawing ----------
 
 const Glyph = { on: '●', off: '○', unset: '·' }
-// Rows the body keeps even when its list is short, so the description sits at the bottom.
-const BODY_ROWS = 8
+// Rows the body keeps even when its list is short, the same on every tab so switching doesn't jump:
+// at least the first, up to the second where the terminal has room. The rest of the panel (header,
+// rules, tabs, legend and margins) takes CHROME_ROWS.
+const BODY_ROWS = [12, 18] as const
+const CHROME_ROWS = 8
 // md-scrub's own colours; Claude Code's theme colours are kept for what they already mean (success,
 // error, warning).
 const ORANGE = '#d97757'
@@ -324,9 +330,11 @@ const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const glyph = (v: boolean | undefined) => (v === undefined ? Glyph.unset : v ? Glyph.on : Glyph.off)
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
-// The row the focus is on, from the key of the Button holding it. Each row is one stop for the arrows,
-// which walk a site's buttons in order: Enter acts on the project cell and `u` on the User cell.
-const focusedPattern = () => (focused?.startsWith('x:') ? focused.slice(2) : undefined)
+// The row the focus is on, from the key of the Button holding it. In Topics and Exclusions the scope
+// cells are the stops, keyed `<scope>@<row key>`: the arrows walk them in order (User, then the
+// project, then the next row) and Enter or a click changes the one under the focus.
+const focusedRow = () => (focused?.includes('@') ? focused.slice(focused.indexOf('@') + 1) : undefined)
+const focusedPattern = () => (focusedRow()?.startsWith('x:') ? focusedRow()!.slice(2) : undefined)
 const focusedLog = () => (focused?.startsWith('l:') ? Number(focused.slice(2)) : focused?.startsWith('e:') ? choice?.row : undefined)
 
 // While the panel is open, redraws when the log changes, so new rows show without a key press.
@@ -377,14 +385,18 @@ export function registerPanel(on: On) {
     const broken = data.topics.filter(t => t.error).length
     const topicName = (id: string) => sentence(data.topics.find(t => t.id === id)?.name ?? id)
 
+    const bodyRows = Math.max(BODY_ROWS[0], Math.min(BODY_ROWS[1], e.props.scroll.bodyRows - CHROME_ROWS))
     const head = (
-      <Box flexDirection="row">
+      <Box flexDirection="row" justifyContent="space-between">
+      <Box flexDirection="row" flexShrink={1} flexWrap="wrap">
         <Text bold color={ORANGE}>md-scrub</Text>
         <Text> · </Text>
         <Text color={hd.state === 'on' ? 'success' : hd.state === 'paused' ? 'warning' : 'error'}>{hd.state}</Text>
         {hd.reason ? <Text dimColor> · {hd.reason}</Text> : null}
         {hd.warning ? <Text color="warning"> · {hd.warning}</Text> : null}
         {!hd.warning && hd.state !== 'off' && broken ? <Text color="error"> · {plural(broken, 'topic has an error', 'topics have errors')}</Text> : null}
+      </Box>
+      {data.version ? <Box marginLeft={2}><Text dimColor>v{data.version}</Text></Box> : null}
       </Box>
     )
     // Each tab is drawn `1: Topics`; the bar beneath the current one spans the same cells.
@@ -419,8 +431,11 @@ export function registerPanel(on: On) {
     const row = (key: string, selected: boolean, children: RenderChildren) => (
       <Box key={key} flexDirection="row" backgroundColor={selected ? SELECTED : undefined} hover={{ backgroundColor: SELECTED }}>{children}</Box>
     )
-    const cell = (s: Scope, text: string, dim: boolean, colour?: string) => (
-      <Box width={scopeWidth(s)} justifyContent="center"><Text dimColor={dim} color={colour}>{text}</Text></Box>
+    // A scope cell: a stop for the arrows; Enter or a click changes that scope.
+    const cell = (rowKey: string, s: Scope, text: string, dim: boolean, onPress: () => void, colour?: string, autoFocus?: true) => (
+      <Box width={scopeWidth(s)} justifyContent="center">
+        <Button key={`${s}@${rowKey}`} plain dimColor={dim} autoFocus={autoFocus} onPress={onPress}><Text color={colour}>{text}</Text></Button>
+      </Box>
     )
 
     let body
@@ -429,58 +444,57 @@ export function registerPanel(on: On) {
     const actions: RenderElement[] = []
     if (tab === 'topics') {
       const sel = selectedTopic(data)
-      const userCycle = () => { if (sel && !sel.error) void setTopic($, sel.id, 'user') }
       body = (
         <Box flexDirection="column" flexGrow={1}>
           {columns}
           {data.topics.map((t, i) => {
             const active = !t.error && effective(t, data.settings)
-            const here = focused === `t:${t.id}`
             return row(`row:${t.id}`, sel?.id === t.id, <Box flexDirection="row">
               <Box width={nameWidth}>
-                <Button key={`t:${t.id}`} plain dimColor={!active && !here} autoFocus={i === 0 ? true : undefined}
-                  onPress={() => { if (!t.error) void setTopic($, t.id, 'project') }}>
+                <Text dimColor={!active} wrap="truncate">
                   {t.error ? <Text color="error">✕</Text> : <Text color={active ? 'success' : undefined}>{active ? Glyph.on : Glyph.off}</Text>}
                   <Text bold={active}> {sentence(t.name)}</Text>
-                </Button>
+                </Text>
               </Box>
               {SCOPES.map(s => {
                 const v = t.error ? undefined : topicSetting(data.settings[s], t.id)
-                return cell(s, glyph(v), v === undefined, v ? 'success' : undefined)
+                return cell(`t:${t.id}`, s, glyph(v), v === undefined, () => { if (!t.error) void setTopic($, t.id, s) },
+                  v ? 'success' : undefined, i === 0 && s === 'user' ? true : undefined)
               })}
             </Box>)
           })}
           <Box flexGrow={1} />
           <Box flexDirection="column" marginTop={1}>
-            {sel?.error ? <Text color="error" wrap="truncate-end">{sel.error}</Text> : <Text dimColor wrap="truncate-end">{sel?.description}</Text>}
+            {sel?.error ? <Text color="error" wrap="truncate-end">{sel.error}</Text> : <Text dimColor>{sel?.description}</Text>}
             {sel && !sel.error ? <Text color="subtle" wrap="truncate-middle">{sel.file ? tilde(sel.file, p.home) : 'built into md-scrub'}</Text> : null}
           </Box>
         </Box>
       )
-      enter = `cycle ${p.projectName}`
-      actions.push(<Button key="user" plain hotkey="u" dimColor onPress={userCycle}>cycle User</Button>)
+      enter = 'cycle'
       if (sel?.file) actions.push(<Button key="open" plain hotkey="o" dimColor onPress={() => { if (sel?.file) void openFile($, sel.file) }}>open</Button>)
       if (sel?.builtIn && !sel.file) actions.push(<Button key="copy" plain hotkey="c" dimColor onPress={() => { if (sel) void copyTopic($, sel) }}>copy to edit</Button>)
     } else if (tab === 'exclusions') {
       const all = [...new Set([...data.exclusions.user, ...data.exclusions.project])]
-      // With the focus elsewhere (a tab), the first row is the one `u` acts on.
+      // With the focus elsewhere (a tab), the first row is highlighted.
       const current = focusedPattern() ?? all[0]
       const toggle = (x: string | undefined, s: Scope) => { if (x) void setPattern($, x, s, !data.exclusions[s].includes(x)) }
       const add = (pattern: string, target: Scope) => {
         adding = undefined
         if (!pattern) return refresh($)
         // The new row, focused, shows it was added.
-        void setPattern($, pattern, target, true).then(() => $.ui.focus({ requestId: PANE, key: `x:${pattern}` })).catch(() => {})
+        void setPattern($, pattern, target, true).then(() => $.ui.focus({ requestId: PANE, key: `${target}@x:${pattern}` })).catch(() => {})
       }
       body = (
-        <Box flexDirection="column">
+        <Box flexDirection="column" flexGrow={1}>
           {columns}
           {all.length === 0 && !adding ? <Text dimColor>No exclusions.</Text> : null}
           {all.map(x => row(`xrow:${x}`, !adding && current === x, <Box flexDirection="row">
             <Box width={nameWidth}>
-              <Button key={`x:${x}`} plain onPress={() => toggle(x, 'project')}><Text>{x}</Text></Button>
+              <Text wrap="truncate">{x}</Text>
             </Box>
-            {SCOPES.map(s => data.exclusions[s].includes(x) ? cell(s, Glyph.on, false, 'success') : cell(s, Glyph.unset, true))}
+            {SCOPES.map(s => data.exclusions[s].includes(x)
+              ? cell(`x:${x}`, s, Glyph.on, false, () => toggle(x, s), 'success')
+              : cell(`x:${x}`, s, Glyph.unset, true, () => toggle(x, s)))}
           </Box>))}
           {adding && Input ? (
             <Box flexDirection="column" marginTop={1}>
@@ -506,18 +520,15 @@ export function registerPanel(on: On) {
               <Text dimColor>folder/ = everything in it · * = any name</Text>
             </Box>
           ) : (
-            <Box marginTop={1}>
+            <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" marginTop={1}>
               <Button key="addx" plain hotkey="a" dimColor
-                onPress={async () => { message = undefined; adding = { query: '', target: 'project', suggestions: cache ? await suggest($, cache.p.root, '') : [] }; $.ui.invalidate('ui.render') }}>add an exclusion</Button>
+                onPress={async () => { message = undefined; adding = { query: '', target: 'project', suggestions: cache ? await suggest($, cache.p.root, '') : [] }; $.ui.invalidate('ui.render') }}>path exclusion</Button>
             </Box>
           )}
         </Box>
       )
       if (adding) enter = 'add'
-      else if (all.length) {
-        enter = `toggle ${p.projectName}`
-        actions.push(<Button key="user" plain hotkey="u" dimColor onPress={() => toggle(current, 'user')}>toggle User</Button>)
-      }
+      else if (all.length) enter = 'toggle'
     } else {
       const current = focusedLog() ?? 0
       const pick = (i: number) => {
@@ -583,7 +594,7 @@ export function registerPanel(on: On) {
         {head}
         {rule}
         {tabs}
-        <Box flexDirection="column" marginTop={1} minHeight={BODY_ROWS}>{body}</Box>
+        <Box flexDirection="column" marginTop={1} minHeight={bodyRows}>{body}</Box>
         {message ? <Text color="error">{message}</Text> : null}
         {rule}
         {keys}
