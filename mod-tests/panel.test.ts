@@ -2,7 +2,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import {
   withTopicSetting, topicSetting, effective, patterns, withPattern, logActions, isPaused, header, isExcluded,
-  projectLog, logDetail, inherited, shown, flipped, providerName, ownSettings,
+  projectLog, logDetail, inherited, shown, flipped, providerName, ownSettings, parseExclude, excludeRows, EXCLUDE,
 } from '../hooks/panel'
 
 const HOME = '/home/test'
@@ -232,18 +232,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: /add an OpenRouter or TypeSafe key/ })).toBeDefined()
   })
 
-  test(`${surface}: an exclusion is added to the project by default`, async ($, on) => {
-    const files = project({ [`${PROJECT}/exclusions`]: '# ours\nlegal/\n' })
-    const writes = new Map<string, string>()
-    fakeFiles(on, files, writes)
+  test(`${surface}: a closes the panel and starts /md-scrub exclude in the prompt box`, async ($, on) => {
+    fakeFiles(on, project(), new Map())
+    const done: string[] = []
+    on('ui.close', (_$, e) => { done.push(`close ${e.id}`); return { value: undefined } })
+    on('prompt.fill', (_$, e) => { done.push(`fill ${e.text}`); return { isFilled: true, text: e.text, cursor: e.text.length } })
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     await ui.press({ key: 'tab:exclusions' })
-    expect(await ui.find({ text: 'legal/' })).toBeDefined()
     await ui.press({ key: 'addx' })
-    await ui.input({ key: 'add', text: 'do', kind: 'change' })
-    expect(await ui.find({ key: 's:docs/' })).toBeDefined()
-    await ui.input({ key: 'add', text: 'docs/' })
-    expect(writes.get(`${PROJECT}/exclusions`)).toBe('# ours\nlegal/\ndocs/\n')
+    expect(done).toEqual(['close md-scrub', `fill ${EXCLUDE}`])
   })
 
   test(`${surface}: the log lists scrubbed and flagged files, and e excludes one`, async ($, on) => {
@@ -369,21 +366,40 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: /second\.md/ })).toBeDefined()
   })
 
-  test(`${surface}: adding an exclusion shows the pattern hint and where it goes`, async ($, on) => {
-    const writes = new Map<string, string>()
-    fakeFiles(on, project(), writes)
-    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
-    await ui.press({ key: 'tab:exclusions' })
-    expect(await ui.find({ text: /folder\/ = everything in it/ })).toBeUndefined()
-    await ui.press({ key: 'addx' })
-    expect(await ui.find({ text: /folder\/ = everything in it/ })).toBeDefined()
-    expect(await ui.find({ text: 'acme-app' })).toBeDefined()
-    await ui.press({ key: 'target' })
-    await ui.input({ key: 'add', text: 'notes/' })
-    expect(writes.get(`${USER}/exclusions`)).toBe('notes/\n')
-    expect(writes.has(`${PROJECT}/exclusions`)).toBe(false)
-  })
 }
+
+test('/md-scrub exclude takes a path and --user', () => {
+  expect(parseExclude('exclude docs/')).toEqual({ pattern: 'docs/', scope: 'project' })
+  expect(parseExclude('exclude --user *.draft.md')).toEqual({ pattern: '*.draft.md', scope: 'user' })
+  expect(parseExclude(' exclude ')).toEqual({ pattern: '', scope: 'project' })
+  expect(parseExclude('')).toBeUndefined()
+})
+
+// Focusing the new cell needs a drawn panel, which the kit's ui.open doesn't make: checked on screen.
+test('/md-scrub exclude adds to the project, or User with --user, and opens the panel', async ($, on) => {
+  const writes = new Map<string, string>()
+  fakeFiles(on, project({ [`${PROJECT}/exclusions`]: '# ours\nlegal/\n' }), writes)
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  await $.command.run({ command: 'md-scrub', args: 'exclude docs/' })
+  expect(writes.get(`${PROJECT}/exclusions`)).toBe('# ours\nlegal/\ndocs/\n')
+  await $.command.run({ command: 'md-scrub', args: 'exclude notes/ --user' })
+  expect(writes.get(`${USER}/exclusions`)).toBe('notes/\n')
+  expect((await $.command.run({ command: 'md-scrub', args: 'exclude' })).text).toContain('Usage: /md-scrub exclude')
+})
+
+test('the typeahead after /md-scrub exclude offers folders and Markdown files, and --user', async () => {
+  const tree: Record<string, { name: string; kind: 'file' | 'dir' }[]> = {
+    [ROOT]: [{ name: 'docs', kind: 'dir' }, { name: 'node_modules', kind: 'dir' }, { name: 'app.ts', kind: 'file' }],
+    [`${ROOT}/docs`]: [{ name: 'maps.md', kind: 'file' }],
+  }
+  const list = async (dir: string) => tree[dir] ?? []
+  const at = (text: string) => { const start = text.lastIndexOf(' ') + 1; return [text, text.slice(start), start] as const }
+  const rows = async (text: string) => (await excludeRows(list, ROOT, ...at(text))).map(r => r.text)
+  expect(await rows('/md-scrub exclude do')).toEqual(['docs/'])
+  expect(await rows('/md-scrub exclude docs/')).toEqual(['docs/maps.md'])
+  expect(await rows('/md-scrub exclude --u')).toEqual(['--user'])
+  expect(await rows('please exclude do')).toEqual([])
+})
 
 test('the log collapses the same action on the same file within a minute', () => {
   const line = (t: string, action: string, file = '/p/a.md') => JSON.stringify({ t, event: 'action', action, file })

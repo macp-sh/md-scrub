@@ -71,7 +71,7 @@ Type `/md-scrub` in a session to see and change what md-scrub does:
 | Tab | For |
 | :- | :- |
 | **Topics** | Switch each topic on or off for **User** (every project) or this project |
-| **Path exclusions** | Files and folders md-scrub never checks, such as `legal/`, at either scope |
+| **Path exclusions** | Files and folders md-scrub never checks, such as `legal/`, at either scope; **a** adds one with `/md-scrub exclude <path>` (add `--user` for every project), where Tab completes the path |
 | **Log** | What md-scrub scrubbed or flagged recently; **e** excludes a file or its folder |
 
 ## Settings files

@@ -114,7 +114,7 @@ export const register: Register = (on, options) => {
   // A reload leaves the previous load's line on screen: start from the last setup check, which a
   // reload doesn't rerun. A new session reruns it in classic.SessionStart, below.
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'md-scrub', description: 'Choose what md-scrub checks and see what it did' }) // opened by panel.tsx
+    await $.command.register({ name: 'md-scrub', description: 'Choose what md-scrub checks and see what it did', argumentHint: '[exclude <path> [--user]]' }) // answered by panel.tsx
     const result = await next(e)
     await refreshWarning($, e.cwd)
     return result

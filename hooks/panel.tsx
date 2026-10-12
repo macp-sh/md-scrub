@@ -1,4 +1,4 @@
-import type { EngineInterface, On, PluginOptions, Register, RenderChildren, RenderElement } from 'claude-code'
+import type { EngineInterface, On, PluginOptions, PromptAutocompleteSuggestion, Register, RenderChildren, RenderElement } from 'claude-code'
 import { PROVIDERS, jevError, type JevOverride, type ProviderId } from '../src/jev-model'
 
 // The /md-scrub panel: whether md-scrub is working (header), what it looks for (Topics), where it
@@ -271,7 +271,6 @@ let focused: string | undefined
 // Which of the plugin's Jev key options are set, from the options it loaded with (a change in /plugin
 // reloads it). Only their presence is read; the values never reach the panel.
 let keyOptions = { typesafe: false, openrouter: false }
-let adding: { query: string; target: Scope; suggestions: string[] } | undefined
 let choice: { row: number; options: string[] } | undefined
 let cache: { p: Paths; data: Data } | undefined
 // A problem with the last action. Shown in the panel, since the pane holds toasts while it's open.
@@ -291,16 +290,43 @@ function say($: EngineInterface, text: string) {
   refresh($)
 }
 
-async function suggest($: EngineInterface, root: string, query: string): Promise<string[]> {
+// Lists a folder's entries: `$.fs.list` in the panel, a stand-in in tests.
+type List = (dir: string) => Promise<readonly { name: string; kind: string }[]>
+
+async function suggest(list: List, root: string, query: string): Promise<string[]> {
   const dir = query.includes('/') ? query.slice(0, query.lastIndexOf('/') + 1) : ''
   const rest = query.slice(dir.length).toLowerCase()
-  const entries = await $.fs.list(dir ? `${root}/${dir}` : root).catch(() => [])
+  const entries = await list(dir ? `${root}/${dir.slice(0, -1)}` : root).catch(() => [])
   return entries
     .filter(e => !SKIP.has(e.name) && !e.name.startsWith('.') && (e.kind === 'dir' || e.name.endsWith('.md')))
     .filter(e => e.name.toLowerCase().startsWith(rest))
     .map(e => dir + e.name + (e.kind === 'dir' ? '/' : ''))
     .sort((a, b) => Number(b.endsWith('/')) - Number(a.endsWith('/')) || a.localeCompare(b))
-    .slice(0, 6)
+    .slice(0, 8)
+}
+
+// A path exclusion is added by a command typed in the prompt box, where Claude Code's typeahead
+// completes the path (Tab takes a row); the panel's `a` puts the start of it there.
+export const EXCLUDE = '/md-scrub exclude '
+
+/** `/md-scrub exclude <path> [--user]`: the pattern, and where it goes (this project unless --user).
+ *  Undefined for any other arguments. */
+export function parseExclude(args: string): { pattern: string; scope: Scope } | undefined {
+  const words = args.trim().split(/\s+/)
+  if (words[0] !== 'exclude') return undefined
+  const rest = words.slice(1)
+  return { pattern: rest.filter(w => w !== '--user').join(' '), scope: rest.includes('--user') ? 'user' : 'project' }
+}
+
+/** Typeahead rows for the word being typed after `/md-scrub exclude`: folders (taking one lists what's
+ *  in it next) and Markdown files under `root`, or --user. None anywhere else in the prompt. */
+export async function excludeRows(list: List, root: string, text: string, token: string, start: number): Promise<PromptAutocompleteSuggestion[]> {
+  if (!/^\/md-scrub\s+exclude\s/.test(text.slice(0, start))) return []
+  if (token.startsWith('-')) return '--user'.startsWith(token) ? [{ text: '--user', description: 'for every project, not just this one' }] : []
+  return (await suggest(list, root, token)).map(path => ({
+    text: path,
+    description: path.endsWith('/') ? 'folder: everything in it' : 'file',
+  }))
 }
 
 const selectedTopic = (d: Data) => {
@@ -329,9 +355,11 @@ async function setTopic($: EngineInterface, id: string, scope: Scope) {
 }
 
 async function setPattern($: EngineInterface, pattern: string, scope: Scope, present: boolean) {
-  if (!cache || !pattern) return
+  if (!pattern) return
   message = undefined
-  const path = `${scope === 'user' ? cache.p.user : cache.p.project}/exclusions`
+  // The panel's paths, or, from the command with the panel closed, worked out afresh.
+  const p = cache?.p ?? await paths($)
+  const path = `${scope === 'user' ? p.user : p.project}/exclusions`
   await $.fs.write(path, withPattern(await readText($, path), pattern, present))
   refresh($)
 }
@@ -402,12 +430,26 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
   const set = (v: unknown) => typeof v === 'string' && v !== ''
   keyOptions = { typesafe: set(options.typesafe_api_key), openrouter: set(options.openrouter_api_key) }
 
-  on('command.run', { command: 'md-scrub' }, async $ => {
-    tab = 'topics'; adding = undefined; choice = undefined; focused = undefined; message = undefined
+  // `/md-scrub` opens the panel; `/md-scrub exclude <path> [--user]` adds a path exclusion first and
+  // opens it on Path exclusions, the new cell focused to show where it went.
+  on('command.run', { command: 'md-scrub' }, async ($, e) => {
+    const exclude = parseExclude(e.args)
+    if (exclude && !exclude.pattern) return { text: 'Usage: /md-scrub exclude <path, folder/ or *.md> [--user]' }
+    tab = exclude ? 'exclusions' : 'topics'; choice = undefined; focused = undefined; message = undefined
+    if (exclude) await setPattern($, exclude.pattern, exclude.scope, true)
     // Opened as a dialog: the arrows walk its buttons (otherwise they scroll) and Esc closes it.
     await $.ui.open({ id: PANE, title: 'md-scrub', focus: true, closeOnEscape: true, holdToasts: true })
+    if (exclude) await $.ui.focus({ requestId: PANE, key: `${exclude.scope}@x:${exclude.pattern}` }).catch(() => {})
     return {}
   })
+
+  // The path after `/md-scrub exclude`, completed by Claude Code's own typeahead with md-scrub's rows.
+  on('prompt.autocomplete', async ($, e, next) => {
+    const result = await next(e)
+    if (!/^\/md-scrub\s+exclude\s/.test(e.text)) return result
+    const rows = await excludeRows(dir => $.fs.list(dir), (await paths($)).root, e.text, e.token, e.start)
+    return rows.length ? { suggestions: [...result.suggestions, ...rows] } : result
+  }).catch(($, e, next) => next(e))
 
   // Display only: if tracking the focus fails, the move goes ahead.
   on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
@@ -419,7 +461,6 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    const Input = 'Input' in els ? els.Input : undefined // mobile draws no text field
     const p = await paths($)
     cache = { p, data: await load($, p) }
     if (!ticker) watchLog($)
@@ -460,7 +501,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
           {TABS.map(([t, label], i) => (
             <Box width={tabWidth(label)}>
               <Button key={`tab:${t}`} plain hotkey={String(i + 1)} dimColor={t !== tab}
-                onPress={() => { tab = t; adding = undefined; choice = undefined; message = undefined; $.ui.invalidate('ui.render') }}>
+                onPress={() => { tab = t; choice = undefined; message = undefined; $.ui.invalidate('ui.render') }}>
                 <Text bold={t === tab}>{label}</Text>
               </Button>
             </Box>
@@ -532,17 +573,11 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
       // With the focus elsewhere (a tab), the first row is highlighted.
       const current = focusedPattern() ?? all[0]
       const toggle = (x: string | undefined, s: Scope) => { if (x) void setPattern($, x, s, !data.exclusions[s].includes(x)) }
-      const add = (pattern: string, target: Scope) => {
-        adding = undefined
-        if (!pattern) return refresh($)
-        // The new row, focused, shows it was added.
-        void setPattern($, pattern, target, true).then(() => $.ui.focus({ requestId: PANE, key: `${target}@x:${pattern}` })).catch(() => {})
-      }
       body = (
         <Box flexDirection="column" flexGrow={1}>
           {columns}
-          {all.length === 0 && !adding ? <Text dimColor>No path exclusions.</Text> : null}
-          {all.map(x => row(`xrow:${x}`, !adding && current === x, <Box flexDirection="row">
+          {all.length === 0 ? <Text dimColor>No path exclusions.</Text> : null}
+          {all.map(x => row(`xrow:${x}`, current === x, <Box flexDirection="row">
             <Box width={nameWidth}>
               <Text wrap="truncate">{x}</Text>
             </Box>
@@ -550,43 +585,16 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
               ? cell(`x:${x}`, s, Glyph.on, false, () => toggle(x, s), 'success')
               : cell(`x:${x}`, s, Glyph.unset, true, () => toggle(x, s)))}
           </Box>))}
-          {adding && Input ? (
-            // The field reads as a path from the root it goes under; the help sits at the bottom, as
-            // the topic description does in Topics.
-            <Box flexDirection="column" flexGrow={1} marginTop={1}>
-              <Box flexDirection="row">
-                <Text dimColor>{adding.target === 'project' ? p.projectName : 'any project'}/</Text>
-                <Input key="add" autoFocus value={adding.query} submitLabel="add"
-                  onInput={async (value: string) => {
-                    if (!adding || !cache) return
-                    adding.query = value
-                    adding.suggestions = await suggest($, cache.p.root, value)
-                    $.ui.invalidate('ui.render')
-                  }}
-                  onSubmit={(value: string) => add(value.trim(), adding?.target ?? 'project')} />
-              </Box>
-              {adding.suggestions.map(s => (
-                <Button key={`s:${s}`} plain dimColor onPress={() => add(s, adding?.target ?? 'project')}>
-                  {'  ' + s}
-                </Button>
-              ))}
-              <Box flexGrow={1} />
-              <Text dimColor>folder/ = everything in it · * = any name</Text>
-              <Button key="target" plain dimColor
-                onPress={() => { if (adding) { adding.target = adding.target === 'project' ? 'user' : 'project'; $.ui.invalidate('ui.render') } }}>
-                <Text dimColor>adds to </Text><Text color={ORANGE}>{adding.target === 'project' ? p.projectName : 'User'}</Text>
-              </Button>
-            </Box>
-          ) : (
-            <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" marginTop={1}>
-              <Button key="addx" plain hotkey="a" dimColor
-                onPress={async () => { message = undefined; adding = { query: '', target: 'project', suggestions: cache ? await suggest($, cache.p.root, '') : [] }; $.ui.invalidate('ui.render') }}>path exclusion</Button>
-            </Box>
-          )}
+          <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" marginTop={1}>
+            <Button key="addx" plain hotkey="a" dimColor onPress={async () => {
+              // The prompt box takes the text only once the panel, a dialog, has closed.
+              await $.ui.close({ id: PANE })
+              await $.prompt.fill({ text: EXCLUDE })
+            }}>path exclusion</Button>
+          </Box>
         </Box>
       )
-      if (adding) enter = 'add'
-      else if (all.length) enter = 'toggle'
+      if (all.length) enter = 'toggle'
     } else {
       const current = focusedLog() ?? 0
       const pick = (i: number) => {
@@ -669,7 +677,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
   })
 
   on('ui.close', { id: PANE }, async ($, e, next) => {
-    adding = undefined; choice = undefined; cache = undefined; message = undefined
+    choice = undefined; cache = undefined; message = undefined
     ticker?.cancel(); ticker = undefined; logStamp = ''
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -677,7 +685,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'md-scrub', description: 'Choose what md-scrub checks and see what it did' })
+    await $.command.register({ name: 'md-scrub', description: 'Choose what md-scrub checks and see what it did', argumentHint: '[exclude <path> [--user]]' })
     return next(e)
   })
   registerPanel(on, options)
