@@ -320,12 +320,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(done).toEqual(['close md-scrub', '/plugin'])
   })
 
-  test(`${surface}: a key added since start-up turns the header on and names the service, with no k`, { options: { typesafe_api_key: 'set' } }, async ($, on) => {
+  test(`${surface}: a key added since start-up turns the header on and names the model and service, with no k`, { options: { typesafe_api_key: 'set' } }, async ($, on) => {
     const noKey = JSON.stringify({ cwd: ROOT, line: 'off: add an OpenRouter or TypeSafe key in /plugin > Installed > md-scrub > Configure' })
     fakeFiles(on, project({ [`${STATE}/setup.json`]: noKey }), new Map())
     const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
     expect(await ui.find({ text: /^on$/ })).toBeDefined()
-    expect(await ui.find({ text: /via TypeSafe/ })).toBeDefined()
+    expect(await ui.find({ text: 'jev-1.13.0 · TypeSafe · v9.8.7' })).toBeDefined()
     expect(await ui.find({ key: 'key' })).toBeUndefined()
   })
 

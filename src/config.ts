@@ -2,6 +2,7 @@ import { mkdirSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { PROVIDERS } from "./jev-model.ts";
 
 export const ROOT = dirname(import.meta.dir);
 
@@ -49,13 +50,8 @@ export const remainingMs = () => budget.until - Date.now();
 export const project = { root: undefined as string | undefined };
 export const setProjectRoot = (cwd: string | undefined) => (project.root = env.CLAUDE_PROJECT_DIR || cwd || undefined);
 
-// Jev is reached one of two ways, each with its own key, endpoint and pinned model. One is used per
-// call, never both: TypeSafe's own API when its key is set, else OpenRouter. There is no failover.
-export const PROVIDERS = {
-  typesafe: { id: "typesafe", name: "TypeSafe", url: "https://api.typesafe.ai/v1/systemone", model: "jev-1.13.0" },
-  openrouter: { id: "openrouter", name: "OpenRouter", url: "https://openrouter.ai/api/alpha/decisions", model: "typesafe/jev-1.13" },
-} as const;
-
+// Jev is reached through one of PROVIDERS (src/jev-model.ts), never both: TypeSafe's own API when its
+// key is set, else OpenRouter. There is no failover.
 export type Provider = (typeof PROVIDERS)[keyof typeof PROVIDERS] & { key: string };
 
 export function jevProvider(): Provider | undefined {

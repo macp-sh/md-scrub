@@ -1,8 +1,8 @@
 import type { EngineInterface, On, PluginOptions, Register, RenderChildren, RenderElement } from 'claude-code'
-import { jevError, type JevOverride, type ProviderId } from '../src/jev-model'
+import { PROVIDERS, jevError, type JevOverride, type ProviderId } from '../src/jev-model'
 
 // The /md-scrub panel: whether md-scrub is working (header), what it looks for (Topics), where it
-// doesn't look (Exclusions) and what it did (Log). Settings are plain files, read and written here:
+// doesn't look (Path exclusions) and what it did (Log). Settings are plain files, read and written here:
 //   built in:  <plugin>/defaults/config.json, defaults/topics/*.json
 //   user:      ~/.claude/md-scrub/config.json, topics/*.json, exclusions
 //   project:   <project root>/.claude/md-scrub/ (same layout)
@@ -362,7 +362,7 @@ const CHROME_ROWS = 8
 // error, warning).
 const ORANGE = '#d97757'
 const SELECTED = '#3a3835'
-const TABS = [['topics', 'Topics'], ['exclusions', 'Exclusions'], ['log', 'Log']] as const
+const TABS = [['topics', 'Topics'], ['exclusions', 'Path exclusions'], ['log', 'Log']] as const
 const TAB_GAP = 3
 // How often an open panel looks for new log rows.
 const LOG_POLL_MS = 2000
@@ -377,8 +377,8 @@ const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const glyph = (v: boolean | undefined) => (v === undefined ? Glyph.unset : v ? Glyph.on : Glyph.off)
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
-// The row the focus is on, from the key of the Button holding it. In Topics and Exclusions the scope
-// cells are the stops, keyed `<scope>@<row key>`: the arrows walk them in order (User, then the
+// The row the focus is on, from the key of the Button holding it. In Topics and Path exclusions the
+// scope cells are the stops, keyed `<scope>@<row key>`: the arrows walk them in order (User, then the
 // project, then the next row) and Enter or a click changes the one under the focus.
 const focusedRow = () => (focused?.includes('@') ? focused.slice(focused.indexOf('@') + 1) : undefined)
 const focusedPattern = () => (focusedRow()?.startsWith('x:') ? focusedRow()!.slice(2) : undefined)
@@ -435,18 +435,21 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
     const topicName = (id: string) => sentence(data.topics.find(t => t.id === id)?.name ?? id)
 
     const bodyRows = Math.max(BODY_ROWS[0], Math.min(BODY_ROWS[1], e.props.scroll.bodyRows - CHROME_ROWS))
+    // What's running, on the right: the model as the service names it (the ID md-scrub sends), the
+    // service, and md-scrub's version. The left side is for state and problems.
+    const using = hd.provider ? PROVIDERS[hd.provider.toLowerCase() as ProviderId] : undefined
+    const running = [using ? `${using.model} · ${using.name}` : '', data.version ? `v${data.version}` : ''].filter(Boolean).join(' · ')
     const head = (
       <Box flexDirection="row" justifyContent="space-between">
       <Box flexDirection="row" flexShrink={1} flexWrap="wrap">
         <Text bold color={ORANGE}>md-scrub</Text>
         <Text> · </Text>
         <Text color={hd.state === 'on' ? 'success' : hd.state === 'paused' ? 'warning' : 'error'}>{hd.state}</Text>
-        {hd.provider ? <Text dimColor> · via {hd.provider}</Text> : null}
         {hd.reason ? <Text dimColor> · {hd.reason}</Text> : null}
         {hd.warning ? <Text color="warning"> · {hd.warning}</Text> : null}
         {!hd.warning && hd.state !== 'off' && broken ? <Text color="error"> · {plural(broken, 'topic has an error', 'topics have errors')}</Text> : null}
       </Box>
-      {data.version ? <Box marginLeft={2}><Text dimColor>v{data.version}</Text></Box> : null}
+      {running ? <Box marginLeft={2}><Text dimColor>{running}</Text></Box> : null}
       </Box>
     )
     // Each tab is drawn `1: Topics`; the bar beneath the current one spans the same cells.
@@ -538,7 +541,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
       body = (
         <Box flexDirection="column" flexGrow={1}>
           {columns}
-          {all.length === 0 && !adding ? <Text dimColor>No exclusions.</Text> : null}
+          {all.length === 0 && !adding ? <Text dimColor>No path exclusions.</Text> : null}
           {all.map(x => row(`xrow:${x}`, !adding && current === x, <Box flexDirection="row">
             <Box width={nameWidth}>
               <Text wrap="truncate">{x}</Text>
@@ -548,9 +551,12 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
               : cell(`x:${x}`, s, Glyph.unset, true, () => toggle(x, s)))}
           </Box>))}
           {adding && Input ? (
-            <Box flexDirection="column" marginTop={1}>
-              <Box flexDirection="row" gap={2}>
-                <Input key="add" autoFocus label="Exclude" placeholder="path, folder/ or *.md" value={adding.query} submitLabel="add"
+            // The field reads as a path from the root it goes under; the help sits at the bottom, as
+            // the topic description does in Topics.
+            <Box flexDirection="column" flexGrow={1} marginTop={1}>
+              <Box flexDirection="row">
+                <Text dimColor>{adding.target === 'project' ? p.projectName : 'any project'}/</Text>
+                <Input key="add" autoFocus value={adding.query} submitLabel="add"
                   onInput={async (value: string) => {
                     if (!adding || !cache) return
                     adding.query = value
@@ -558,17 +564,18 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
                     $.ui.invalidate('ui.render')
                   }}
                   onSubmit={(value: string) => add(value.trim(), adding?.target ?? 'project')} />
-                <Button key="target" plain dimColor
-                  onPress={() => { if (adding) { adding.target = adding.target === 'project' ? 'user' : 'project'; $.ui.invalidate('ui.render') } }}>
-                  <Text dimColor>adds to </Text><Text color={ORANGE}>{adding.target === 'project' ? p.projectName : 'User'}</Text>
-                </Button>
               </Box>
               {adding.suggestions.map(s => (
                 <Button key={`s:${s}`} plain dimColor onPress={() => add(s, adding?.target ?? 'project')}>
                   {'  ' + s}
                 </Button>
               ))}
+              <Box flexGrow={1} />
               <Text dimColor>folder/ = everything in it · * = any name</Text>
+              <Button key="target" plain dimColor
+                onPress={() => { if (adding) { adding.target = adding.target === 'project' ? 'user' : 'project'; $.ui.invalidate('ui.render') } }}>
+                <Text dimColor>adds to </Text><Text color={ORANGE}>{adding.target === 'project' ? p.projectName : 'User'}</Text>
+              </Button>
             </Box>
           ) : (
             <Box flexDirection="column" flexGrow={1} justifyContent="flex-end" marginTop={1}>

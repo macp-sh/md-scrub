@@ -1,5 +1,5 @@
-// A topic's own Jev settings: the `jev` block in its file. Shared by the hooks (src/scrub.ts) and the
-// panel (hooks/panel.tsx), so it imports nothing.
+// Jev's providers, and a topic's own Jev settings: the `jev` block in its file. Shared by the hooks
+// (src/config.ts, src/scrub.ts) and the panel (hooks/panel.tsx), so it imports nothing.
 //
 //   "jev": { "model": "jev-1.14.0", "flag": 0.35, "mostly": 0.6 }
 //   "jev": { "model": { "typesafe": "jev-1.14.0", "openrouter": "typesafe/jev-1.14" } }
@@ -9,6 +9,14 @@
 // one for the provider in use, is an error that turns the topic off; md-scrub doesn't guess.
 
 export type ProviderId = 'typesafe' | 'openrouter'
+
+// The two ways to reach Jev, each with its own endpoint and pinned model (md-scrub's thresholds were
+// tuned for these; see claude/notes/typesafe-direct-api.md).
+export const PROVIDERS = {
+  typesafe: { id: 'typesafe', name: 'TypeSafe', url: 'https://api.typesafe.ai/v1/systemone', model: 'jev-1.13.0' },
+  openrouter: { id: 'openrouter', name: 'OpenRouter', url: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-1.13' },
+} as const
+
 export type JevOverride = { model?: string | Partial<Record<ProviderId, string>>; flag?: number; mostly?: number }
 
 const NAMES: Record<ProviderId, string> = { typesafe: 'TypeSafe', openrouter: 'OpenRouter' }
