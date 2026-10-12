@@ -1,4 +1,4 @@
-import type { EngineInterface, On, Register, RenderChildren, RenderElement } from 'claude-code'
+import type { EngineInterface, On, PluginOptions, Register, RenderChildren, RenderElement } from 'claude-code'
 
 // The /md-scrub panel: whether md-scrub is working (header), what it looks for (Topics), where it
 // doesn't look (Exclusions) and what it did (Log). Settings are plain files, read and written here:
@@ -8,6 +8,8 @@ import type { EngineInterface, On, Register, RenderChildren, RenderElement } fro
 //   state:     ~/.claude/md-scrub/state/log.jsonl, setup.json (written by the hooks)
 
 const PANE = 'md-scrub'
+// The start-up check's line when md-scrub is off for want of an OpenRouter key (src/hooks.ts).
+const NEEDS_KEY = /OpenRouter key/
 const SCOPES = ['user', 'project'] as const
 type Scope = (typeof SCOPES)[number]
 type Tab = 'topics' | 'exclusions' | 'log'
@@ -142,8 +144,10 @@ export function isPaused(text: string, now: number): boolean {
 }
 
 /** What the header says, from setup.json (the start-up check) and the log. */
-export function header(setup: { cwd?: string | null; line?: string | null } | undefined, root: string, paused: boolean): Header {
-  const line = setup?.line && (!setup.cwd || setup.cwd === root) ? setup.line : undefined
+export function header(setup: { cwd?: string | null; line?: string | null } | undefined, root: string, paused: boolean, hasKey = false): Header {
+  let line = setup?.line && (!setup.cwd || setup.cwd === root) ? setup.line : undefined
+  // The start-up check found no key, but one has been added since: the hooks read it on their next run.
+  if (hasKey && line && NEEDS_KEY.test(line)) line = undefined
   const off = line?.match(/^(off|not running): (.*)$/)
   if (off) return { state: 'off', reason: off[2] }
   if (paused) return { state: 'paused', reason: "OpenRouter isn't responding", warning: line }
@@ -236,7 +240,7 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
     exclusions,
     log: log.rows,
     otherLog: log.others,
-    header: header(setup, p.root, isPaused(logText, await $.clock.now())),
+    header: header(setup, p.root, isPaused(logText, await $.clock.now()), hasKey),
     logError,
   }
 }
@@ -245,6 +249,9 @@ async function load($: EngineInterface, p: Paths): Promise<Data> {
 
 let tab: Tab = 'topics'
 let focused: string | undefined
+// Whether the plugin's OpenRouter key option is set, from the options it loaded with (a change in
+// /plugin reloads it). Only its presence is read; the value never reaches the panel.
+let hasKey = false
 let adding: { query: string; target: Scope; suggestions: string[] } | undefined
 let choice: { row: number; options: string[] } | undefined
 let cache: { p: Paths; data: Data } | undefined
@@ -365,7 +372,8 @@ function watchLog($: EngineInterface) {
 
 // status.ts's session.start hook registers the /md-scrub command (a module takes one unmatched hook per
 // event, and $ can't be passed across files); `register` below does it when this module loads alone.
-export function registerPanel(on: On) {
+export function registerPanel(on: On, options: PluginOptions = {}) {
+  hasKey = typeof options.openrouter_api_key === 'string' && options.openrouter_api_key !== ''
 
   on('command.run', { command: 'md-scrub' }, async $ => {
     tab = 'topics'; adding = undefined; choice = undefined; focused = undefined; message = undefined
@@ -596,6 +604,14 @@ export function registerPanel(on: On) {
     }
 
     const hint = (k: string, d: string) => <Text>{k}<Text dimColor> {d}</Text></Text>
+    // Off for want of a key: `k` closes the panel and opens Claude Code's own /plugin screen, where the
+    // key is typed into its Configure form and kept in secure storage, never in this panel.
+    if (hd.state === 'off' && NEEDS_KEY.test(hd.reason ?? '')) {
+      actions.push(<Button key="key" plain hotkey="k" dimColor onPress={async () => {
+        await $.ui.close({ id: PANE })
+        await $.command.run({ command: 'plugin' })
+      }}>add OpenRouter key</Button>)
+    }
     const legend = [hint('↑↓', 'move'), ...(enter ? [hint('enter', enter)] : []), ...actions, hint('1-3', 'screen'), hint('esc', 'close')]
     const keys = (
       <Box flexDirection="row" flexWrap="wrap">
@@ -623,10 +639,10 @@ export function registerPanel(on: On) {
   }).catch(($, e, next) => next(e))
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'md-scrub', description: 'Choose what md-scrub checks and see what it did' })
     return next(e)
   })
-  registerPanel(on)
+  registerPanel(on, options)
 }

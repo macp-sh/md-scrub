@@ -117,6 +117,10 @@ test('the header comes from the start-up check, for this project only', () => {
   expect(header({ cwd: '/elsewhere', line: 'off: a settings or topic file has an error' }, ROOT, false)).toEqual({ state: 'on' })
   expect(header({ cwd: ROOT, line: '1 topic has an error' }, ROOT, false)).toEqual({ state: 'on', warning: '1 topic has an error' })
   expect(header(undefined, ROOT, true).state).toBe('paused')
+  // A key added since the start-up check: that check's 'no key' line no longer holds.
+  const noKey = { cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' }
+  expect(header(noKey, ROOT, false, true)).toEqual({ state: 'on' })
+  expect(header({ cwd: ROOT, line: 'off: a settings or topic file has an error' }, ROOT, false, true).state).toBe('off')
 })
 
 // ---------- the pane, against a small in-memory file system ----------
@@ -284,6 +288,26 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(writes.get(`${USER}/exclusions`)).toBe('legal/\n')
     await ui.press({ key: 'project@x:legal/' })
     expect(writes.get(`${PROJECT}/exclusions`)).toBe('')
+  })
+
+  test(`${surface}: off for want of a key, k closes the panel and opens /plugin`, async ($, on) => {
+    const noKey = JSON.stringify({ cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' })
+    fakeFiles(on, project({ [`${STATE}/setup.json`]: noKey }), new Map())
+    const done: string[] = []
+    on('ui.close', (_$, e) => { done.push(`close ${e.id}`); return { value: undefined } })
+    on('command.run', (_$, e) => { done.push(`/${e.command}`); return {} })
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    expect(await ui.find({ text: /add OpenRouter key/ })).toBeDefined()
+    await ui.press({ key: 'key' })
+    expect(done).toEqual(['close md-scrub', '/plugin'])
+  })
+
+  test(`${surface}: a key added since start-up turns the header on, with no k`, { options: { openrouter_api_key: 'set' } }, async ($, on) => {
+    const noKey = JSON.stringify({ cwd: ROOT, line: 'off: add your OpenRouter key in /plugin > Installed > md-scrub > Configure' })
+    fakeFiles(on, project({ [`${STATE}/setup.json`]: noKey }), new Map())
+    const ui = await $.ui.mount({ plugin: 'md-scrub', surface, component: 'Pane', props: PANE_PROPS, requestId: 'md-scrub' })
+    expect(await ui.find({ text: /^on$/ })).toBeDefined()
+    expect(await ui.find({ key: 'key' })).toBeUndefined()
   })
 
   test(`${surface}: the log shows only this project, says what a row means and counts the rest`, async ($, on) => {

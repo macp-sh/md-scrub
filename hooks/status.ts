@@ -108,8 +108,8 @@ async function watch<R>($: EngineInterface, id: string, run: () => Promise<R>): 
 }
 
 // hooks.json takes one module: this one registers the status line and the /md-scrub panel.
-export const register: Register = on => {
-  registerPanel(on)
+export const register: Register = (on, options) => {
+  registerPanel(on, options)
 
   // A reload leaves the previous load's line on screen: start from the last setup check, which a
   // reload doesn't rerun. A new session reruns it in classic.SessionStart, below.
