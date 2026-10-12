@@ -300,7 +300,9 @@ async function suggest(list: List, root: string, query: string): Promise<string[
   const rest = query.slice(dir.length).toLowerCase()
   const entries = await list(dir ? `${root}/${dir.slice(0, -1)}` : root).catch(() => [])
   return entries
-    .filter(e => !SKIP.has(e.name) && !e.name.startsWith('.') && (e.kind === 'dir' || e.name.endsWith('.md')))
+    // Folders of every kind, hidden ones included (as Claude Code's own @ list shows them), and Markdown
+    // files: md-scrub checks nothing else, so another file is no use to exclude.
+    .filter(e => !SKIP.has(e.name) && (e.kind === 'dir' || e.name.endsWith('.md')))
     .filter(e => e.name.toLowerCase().startsWith(rest))
     .map(e => dir + e.name + (e.kind === 'dir' ? '/' : ''))
     .sort((a, b) => Number(b.endsWith('/')) - Number(a.endsWith('/')) || a.localeCompare(b))
@@ -624,7 +626,7 @@ export function registerPanel(on: On, options: PluginOptions = {}) {
                 </Button>
               </Box>
               {adding.matches.map(m => (
-                <Button key={`m:${m}`} plain dimColor onPress={() => fill(m)}>{'  ' + m}</Button>
+                <Button key={`m:${m}`} plain dimColor onPress={() => fill(m)}>{'+ ' + m}</Button>
               ))}
             </Box>
           ) : (

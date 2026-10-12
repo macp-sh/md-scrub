@@ -241,6 +241,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'add' })).toBeDefined()
     await ui.input({ key: 'add', text: 'do', kind: 'change' })
     expect((await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => k?.startsWith('m:'))).toEqual(['m:docs/'])
+    expect((await ui.find({ key: 'm:docs/' }))?.text).toBe('+ docs/')
     // Taking a folder fills the field with it and lists what's inside; nothing is added yet.
     await ui.press({ key: 'm:docs/' })
     expect((await ui.find({ key: 'add' }))?.props.value).toBe('docs/')
@@ -409,13 +410,15 @@ test('/md-scrub exclude adds to the project, or User with --user, and opens the 
 
 test('the typeahead after /md-scrub exclude offers folders and Markdown files, and --user', async () => {
   const tree: Record<string, { name: string; kind: 'file' | 'dir' }[]> = {
-    [ROOT]: [{ name: 'docs', kind: 'dir' }, { name: 'node_modules', kind: 'dir' }, { name: 'app.ts', kind: 'file' }],
+    [ROOT]: [{ name: 'docs', kind: 'dir' }, { name: '.claude', kind: 'dir' }, { name: '.git', kind: 'dir' }, { name: 'node_modules', kind: 'dir' }, { name: 'app.ts', kind: 'file' }],
     [`${ROOT}/docs`]: [{ name: 'maps.md', kind: 'file' }],
   }
   const list = async (dir: string) => tree[dir] ?? []
   const at = (text: string) => { const start = text.lastIndexOf(' ') + 1; return [text, text.slice(start), start] as const }
   const rows = async (text: string) => (await excludeRows(list, ROOT, ...at(text))).map(r => r.text)
   expect(await rows('/md-scrub exclude do')).toEqual(['docs/'])
+  // Hidden folders too, as Claude Code's @ list shows them; never .git or node_modules.
+  expect(await rows('/md-scrub exclude .')).toEqual(['.claude/'])
   expect(await rows('/md-scrub exclude docs/')).toEqual(['docs/maps.md'])
   expect(await rows('/md-scrub exclude --u')).toEqual(['--user'])
   expect(await rows('please exclude do')).toEqual([])
